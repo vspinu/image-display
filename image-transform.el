@@ -1,6 +1,6 @@
-;;; image-transform.el --- support for image transformations  -*- lexical-binding: nil -*-
+;;; image-transform.el --- Support for image transformations  -*- lexical-binding: nil -*-
 ;;
-;; Copyright (C) 2013 Free Software Foundation, Inc.
+;; Copyright (C) 2014 Free Software Foundation, Inc.
 ;;
 ;; Author: Vitalie Spinu <spinuvit@gmail.com>
 ;; Keywords: multimedia
@@ -31,39 +31,45 @@
   (require 'cl-macs))
 
 (defcustom image-transform-backends '(imagemagick convert)
-  "Backends to try out for image transformation.
+  "List of backends which are tried in turn by `image-transform'.
 
-For `imagemagick' backend, `image-transform' will try to use
-internal Emacs ImageMagick support. For `convert' use external
-ImageMagick \"convert\" utility to produce a transformed
-temporary image file.
+For 'imagemagick' backend uses internal Emacs ImageMagick
+support. 'convert' backed uses external ImageMagick 'convert'
+utility. If Emacs was not compiled with ImageMagick support
+`imagemagick' backend is ignored.
 
-If Emacs was not compiled with ImageMagick support `imagemagick'
-backend is ignored.
+Each backend 'BACKEND' consists of the following components:
 
-The actual transformation functions are
-`image-transform:imagemagick' and `image-transform:convert'. See
-`image-transform' for more.
+ 1) Transformation function 'image-transform:BACKEND' that takes as
+    input an image and transform specs. Currently implemented
+    functions are `image-transform:imagemagick' and
+    `image-transform:convert'.
+ 
+ 2) Supported transforms 'image-transform-features:BACKEND' list
+    of lists of of the form (FEATURE DOC TYPE), where:
 
-Available backend features are stored in
-`image-transform-features:imagemagick' and
-`image-transform-features:convert' variables which are lists of
-lists like (FEATURE DOC READ-TYPE), where:
+    - FEATURE is a keyword naming a transformation.
+   
+    - DOC is a string describing the feature.
+   
+    - TYPE is a symbol such that 'image-transform-normalize:TYPE'
+      is a declared function that accepts KEY and VALUE arguments
+      and returns a list of one or more canonical pairs (NEWKEY
+      NEWVALUE) to be passed to the appropriate backend. NEWVALUE
+      is an elisp object such that when formatted as string it
+      should comply with the imagemagick convert specifications
+      http://www.imagemagick.org/script/command-line-options.php
 
- - FEATURE is a keyword
+      Most common examples of readers are
+      `image-transform-normalize:number' and
+      `image-transform-normalize:geometry'.
 
- - DOC is a string describing the feature
+Specs can be supplied either as a string in 'convert' convention
+or as an elisp native object.
 
- - READ-TYPE is a symbol such that image-tr-reader:READ-TYPE is a
-   declared function that takes as arguments KEY and VALUE of the
-   new specification. It should return a list of one or more
-   canonical pairs (NEWKEY NEWVALUE) to be later inserted into
-   the image specification by the calling backend. NEWVALUE
-   should be an object such that when formatted as string should
-   comply with the imagemagick convert specifications
-   http://www.imagemagick.org/script/command-line-options.php
-   Most common examples of readers are `image-tr-reader:number'
-   and `image-tr-reader:geometry'."
+See `image-transform-features:imagemagick' and
+`image-transform-features:convert' for available features.
+"
   :group 'image
   :type '(repeat symbol))
 
@@ -72,8 +78,11 @@ lists like (FEATURE DOC READ-TYPE), where:
   :group 'image
   :type 'string)
 
+(put 'next-backend 'error-conditions '(error next-backend))
+
 
-;;; GENERAL IMAGE FUNCTIONS (fixme: move to image.el)
+;;; General Image Functions (fixme: move to image.el)
+
 ;;;###autoload
 (defun image-get-display-property (&optional pos)
   (setq pos (or pos (point)))
@@ -105,8 +114,8 @@ POS for display property that holds an image."
         (and (eq (car-safe (cdr-safe disp)) 'image)
              (cdr disp)))))
 
-
 ;; tothink: this rename with image-transform prefix?
+;;;###autoload
 (defun image-get-transforms (&optional image)
   "Return transforms object associated with the IMAGE"
   (interactive)
@@ -116,7 +125,7 @@ POS for display property that holds an image."
 
 
 
-;;; INTERNALS
+;;; Internal Utilities
 
 (defun image-tr--delete-properties (list props)
   "Remove PROPS from LIST destructively.
@@ -149,8 +158,6 @@ transformed LIST."
       (plist-put (cdr image) :osize osize))
     osize))
 
-;; (image-tr--delete-transforms (list 'image :transforms (list 'ttt :key 34 :key 44)) '(:key))
-
 (defun image-tr--rescale (image sw &optional sh)
   ;; used by imagemagick backend
   (setq sh (or sh sw))
@@ -180,14 +187,13 @@ transformed LIST."
           (when (/= sw sh)
             (plist-put (cdr image) :height (floor (* sh (cdr size))))))))))
 
-
 (defvar image-tr--right-angle-fudge 0.0001
   "Snap distance to a multiple of a right angle.
 There's no deep theory behind the default value, it should just
 be somewhat larger than ImageMagick's MagickEpsilon.")
 
-;; These two functions are slightly adapted functions from old
-;; image-mode.el by Wolfgang Jenkner <wjenkner@inode.at>
+;; These two functions are slightly adapted from the old image-mode.el and were
+;; authored by by Wolfgang Jenkner <wjenkner@inode.at>
 (defsubst image-tr--get-rotated-width (width height rotation)
   "Return the bounding box width of a rotated WIDTH x HEIGHT rectangle.
 ROTATION is the rotation angle in  degrees."
@@ -219,7 +225,6 @@ ROTATION is the rotation angle in  degrees."
 ;; rotation is the center of the rectangle and min.x and max.x
 ;; (resp. min.y and max.y) are the smallest and the largest of the
 ;; projections of the vertices onto the first (resp. second) axis.
-
 (defun image-tr--get-rotated-size (width height length &optional rotation)
   "Return (w . h) so that a rotated w x h image has exactly width LENGTH.
 The ROTATION angle defaults 0 and SCALE to 1.
@@ -277,18 +282,177 @@ done for values close to a multiple of 90, see
                      (1- w)))
               h))))))
 
+
+;;; Parsers
+;; Parser converts a 'convert' style string specification into a meaningful
+;; elisp representation.
+
+(defun image-transform-parse:number (str)
+  (if (numpberp str)
+      str
+    (when (string-match "^ *\\([0-9.]+\\) *$" str)
+      (string-to-number (match-string 1 str)))))
+
+(defun image-transform-parse:scale (str)
+  (if (numberp str)
+      str
+    (when (string-match "^ *\\([0-9.]+\\)% *$" str)
+      (string-to-number (match-string 1 str)))))
+
+(defun image-transform-parse:geometry (geom)
+  "Parse ImageMagick geometry specification.
+
+X can be either \"x\",\"X\" or \" \" (space).
+
+scale%  	Height and width both scaled by specified percentage.
+xscaleXyscale% 	Height and width individually scaled by specified percentages.
+width   	Width given, height automagically selected to preserve aspect ratio.
+Xheight 	Height given, width automagically selected to preserve aspect ratio.
+widthXheight 	Maximum values of height and width given, aspect ratio preserved.
+widthXheight^ 	Minimum values of width and height given, aspect ratio preserved.
+widthXheight! 	Width and height emphatically given, original aspect ratio ignored.
+widthXheight> 	Shrinks an image with dimension(s) larger than the corresponding width and/or height argument(s).
+widthXheight< 	Enlarges an image with dimension(s) smaller than the corresponding width and/or height argument(s).
+area@   	Resize image to have specified area in pixels. Aspect ratio is preserved.
+
+Return a list of the form (W H o) where o is an operator giving
+an additional meaning to W and H. Can be ^ ! > < or @.
+
+Offset geometry from \"convert\" specifications is not yet
+supported. See http://www.imagemagick.org/script/command-line-processing.php#geometry"
+  (when (and (stringp geom)
+             (string-match
+              "^ *\\([0-9.]+\\)?[xX ]?\\([0-9.]+\\)?\\([@><^!%]\\)? *$"
+              geom))
+    (let ((W (match-string 1 geom))
+          (H (match-string 2 geom))
+          (o (match-string 3 geom)))
+      (list (and W (string-to-number W))
+            (and H (string-to-number H))
+            o))))
 
 
-;;; TRANSFORM API
+;;; Normalizers
 
-(put 'next-backend 'error-conditions '(error next-backend))
+;; convert backend can accept a multitude of string inputs. 
+(defvar image-tr-accept-unparsed nil
+  "Internal. Whether numeric writers should accepts non parseble
+strings as valid input.")
+
+(defun image-transform-normalize:number (key value)
+  "Basic processor of numeric transform specifications.
+
+KEY names the transformation. VALUE must be a number or a string
+that could be converted into a number. If the conversion has
+failed and `image-tr-accept-unparsed' is nil, signal
+'next-backend."
+  (setq value
+        (pcase value
+          ((or (pred null)
+               (pred numberp)) value)
+          ((pred stringp)
+           (or (image-transform-parse:number value)
+               (if image-tr-accept-unparsed
+                   value
+                 (signal 'next-backend
+                         (list (format "Cannot parse %s value" key))))))
+          (_ (signal 'next-backend
+                     (list (format "Invalid type of argument %s" key))))))
+  (list key (if (numberp value)
+                (number-to-string value)
+              value)))
+
+(defalias 'image-transform-normalize:degrees 'image-transform-normalize:number)
+(defalias 'image-transform-normalize:value 'image-transform-normalize:number)
+
+(defun image-transform-normalize:scale (key value)
+  "Process scale argument.
+VALUE must be a number or string of the form \"N%\" where N is a
+number, giving the percentage by which to scale the image.
+
+For \"convert\" backend scale can take additional geometry
+specifications."
+  (setq value
+        (pcase value
+          ((or (pred null)
+               (pred numberp)) value)
+          ((pred stringp)
+           (or (image-transform-parse:scale value)
+               (if image-tr-accept-unparsed
+                   value
+                 (signal 'next-backend
+                         (list (format "Cannot parse %s value" key))))))
+          (_ (signal 'next-backend
+                     (list (format "Invalid type of argument %s" key))))))
+  (list key (if (numberp value)
+                (concat (number-to-string value) "%")
+              value)))
+
+(defun image-transform-normalize:boolean (key value)
+  (list key value))
+
+(defun image-transform-normalize:geometry (key value)
+  "Geometry reader.
+VALUE can be
+
+ - numeric - interpreted as width.
+
+ - string - interpreted as \"convert\" program specification. It
+   is parsed by `image-transform-parse:geometry' for
+   'imagemagick' backend and is parsed as is to 'convert'
+   backend.
+
+ - cons (W . H) or list (W H) - rescale the image maximally such
+   that new image fits into (W . H) box. Aspect ratio
+   preserved. Equivalent to WxH \"convert\" specification.
+
+ - list (W H o) - Similar to \"WxHo\" specification of where o
+ can be \"!\",\"%\",\"^\",\"@\",\">\" or \"<\".
+
+For example, to force the new dimensions of the image you should
+supply (list W H \"!\")."
+
+  ;; If `image-tr-accept-unparsed' is non-nil, accepts strings that
+  ;; don't match the above pattern. Otherwise pass to next backend by
+  ;; signaling 'next-backend.
+
+  (setq value
+        (pcase value
+          ((pred null) value)
+          ((pred numberp) (number-to-string value))
+          (`(,w ,h ,o . nil) (concat (and w (number-to-string w)) "x"
+                                     (and h (number-to-string h)) o))
+          ;; (`(,w . nil) (number-to-string w))
+          ((or `(,w ,h . nil) `(,w . ,h))
+           (concat (and w (number-to-string w)) "x"
+                   (and h (number-to-string h))))
+          ((pred stringp)
+           (if (or (image-transform-parse:geometry value)
+                   image-tr-accept-unparsed)
+               value
+             (signal 'next-backend
+                     (list (format "Cannot parse %s geometry argument" key)))))
+          (_ (signal 'next-backend
+                     (list (format "Invalid %s geometry specification" key))))))
+  (list key value))
+
+(defun image-transform-normalize:choice (key value &rest choices)
+  "Checks if value is in CHOICES list.
+Return '(key value) if true, signal 'next-backend error
+otherwise."
+  (if (member value choices)
+      (list key value)
+    (signal 'next-backend
+            (list (format "%s is not a valid value of option %s" value key)))))
+
+
+
+;;; Transform API utilities
 
 (defun image-tr--unsupported-features (specs backend)
-  "Return unsupported features of BACKEND from the list of features in SPECS.
-SPECS is a list of :keyword value pairs, with keywords
-representing features.  BACKEND is a symbol or string and
-FEATURES is a list of symbols to be looked in
-image-transform-features:BACKEND alist."
+  "Return unsupported features from SPECS by BACKEND.
+SPECS are as in `image-transform'. BACKEND is a symbol or a
+string."
   (let ((features (cl-loop for s in specs if (keywordp s) collect s))
         (available (symbol-value
                     (intern (concat "image-transform-features:"
@@ -300,10 +464,11 @@ image-transform-features:BACKEND alist."
              collect f)))
 
 (defun image-tr--check-unsupported-features (image newspecs backend)
+  "Signal 'next-backend when any of the IMAGE's specs and NEWSPECS are unsupported by the BACKEND.
+NEWSPECS are as SPECS in `image-transform'."
   (let* ((trlist (image-get-transforms image))
          (un-specs (image-tr--unsupported-features newspecs backend))
          (un-tr (image-tr--unsupported-features (cdr trlist) backend)))
-    
     (when un-specs
       (signal 'next-backend
               (list (format "Unsupported features: %s" un-specs))))
@@ -312,9 +477,8 @@ image-transform-features:BACKEND alist."
               (list (format "Unsupported existing transforms: %s" un-tr))))))
 
 (defun image-tr--normalize-boolean-specs (specs backend)
-  "Check if value is missing for any of the keys in SPECS.
-If so, check whether key is boolean. If so, insert t, otherwise
-throw an error."
+  "Insert missing boolean values into SPECS.
+SPECS are as in `image-transform'."
   (let ((p specs)
         (features (symbol-value (intern (format "image-transform-features:%s" backend)))))
     (while p
@@ -326,19 +490,18 @@ throw an error."
           (signal 'next-backend (list "Missing value for non-boolean %s" (car p)))))
       (setq p (cdr p)))
     specs))
-
 ;; (setq tl '(:taint :taint :ping))
 ;; (image-tr--normalize-boolean-specs tl 'convert)
 
-(defun image-tr--read-newspecs (newspecs backend)
-  "Apply BACKEND readers on NEWSPECS"
-  (cl-loop for s on newspecs by 'cddr append
+(defun image-tr--normalize-specs (specs backend)
+  "Normalize SPECS given the spec types declared in the BACKEND."
+  (cl-loop for s on specs by 'cddr append
            (let* ((el (assoc (car s)
                              (symbol-value
                               (intern (concat "image-transform-features:"
                                               (symbol-name backend))))))
                   (read-type (nth 2 el))
-                  (reader (intern (concat "image-tr-reader:"
+                  (reader (intern (concat "image-transform-normalize:"
                                           (if (listp read-type)
                                               (symbol-name (car read-type))
                                             (symbol-name read-type))))))
@@ -350,19 +513,19 @@ throw an error."
                    (funcall reader (car s) (cadr s)))
                (list (car s) (cadr s))))))
 
-(defun image-tr--add-transforms (trlist newtr)
-  "Destructively populate TRLIST with NEWTR transforms.
-Return new TRLIST. Both trlist and newtr are lists of pairs :TR
-VALUE, with possibly repeated keys.
-If VALUE is nil, all keys :TR are removed from TRLIST."
-  (cl-loop for s on newtr  by 'cddr do
+(defun image-tr--add-transforms (trs newtrs)
+  "Destructively populate TRS with NEWTRS transforms.
+Return new TRS. Both TRS and NEWTRS are list of pairs :TR VALUE,
+with possibly repeated keys. If VALUE is nil, all :TR key-values
+are removed from TRS."
+  (cl-loop for s on newtrs  by 'cddr do
            (let ((kwd (car s))
                  (val (cadr s)))
              (if (null val)
                  ;; API: remove null properties 
-                 (image-tr--delete-properties trlist (list kwd))
-               (setq trlist (append trlist (list kwd val))))))
-  trlist)
+                 (image-tr--delete-properties trs (list kwd))
+               (setq trs (append trs (list kwd val))))))
+  trs)
 
 (defun image-tr--adjust-specs-for-fit (image newspecs)
   "Adjust specifications by computing new :resize specification
@@ -373,7 +536,7 @@ when supplied :resize is a symbol ('fit, 'fit-width etc)."
                (symbolp resize))
       (let* ((rotate (cadr (memq :rotate newspecs)))
              (orot (plist-get (cdr image) :rotation))
-             (win (or (cadr (memq :WIN newspecs))
+             (win (or (cadr (memq :window newspecs))
                       (selected-window)))
              ;; Note: `image-size' looks up and thus caches the
              ;; untransformed image. There's no easy way to prevent
@@ -433,23 +596,39 @@ when supplied :resize is a symbol ('fit, 'fit-width etc)."
                          (list (unless (car res) (cdr res)) (car res))))))))))
   newspecs)
 
+
+
+;;; Transform API
+
 ;;;###autoload
 (defun image-transform (image &rest specs)
-  "Return destructively transformed IMAGE.
+  "Transform IMAGE by applying transformation SPECS.
 
-SPECS are a key value pairs where keys depend on backend. See
-`image-transform-features:imagemagick' and
-`image-transform-features:convert' for a list of supported
-features.
+SPECS is a list of key-value pairs giving the name and parameters
+of the transformation. See `image-transform-features:imagemagick'
+and `image-transform-features:convert' for lists of supported
+features. Boolean specs can miss the value, in which case `t' is
+assumed.
 
-Several arguments are treated specially, or are pre-processed
-before being send to backend functions:
+Transformation backends listed in `image-transform-backends' are
+tried in turn and the first suitable backend is applied. If none
+of the backends can be applied an error is thrown.
 
-  :backend - force a specific backend.
+All the transformations applied so far are stored as part of the
+Emacs image data structure. Each time a new transformation is
+applied the whole transformation chain is re-applied to the
+original image. This ensures that internal optimization of the
+'convert' backend is used and the image doesn't unnecessary loose
+in quality.
 
-  :resize can be
+Several specs are treated specially or are pre-processed before
+being send to the backend functions:
+
+  :backend - enforce a specific backend.
+
+  :resize can be:
    - a number, giving new width of the image
-   - a cons, giving thesize (w x h) in pixels.
+   - a cons, giving the size (w x h) in pixels.
    - a symbol:
      *`fit' - maximally scale IMAGE to fit into WIN.
      *`fit-height' - fit the image to WIN's height.
@@ -461,13 +640,13 @@ before being send to backend functions:
   replace the current image specification with the new file (not
   implemented yet)
  
-  :win is a window that is used when :resize is a
+  :window - a window to be used when :resize is a
   symbol. Defaults to the selected window.
 
-This functions uses plist-put and, thus, destructively modifies
-the IMAGE. Use `copy-list' to avoid modifying existing images.
+This function destructively modifies the IMAGE. Use `copy-list'
+to avoid modifying existing images.
 
-See also `image-transform-backends' for the backend API."
+See `image-transform-backends' for the backend API."
 
   (let* ((force-backend (plist-get specs :backend))
          (backends (if (null force-backend)
@@ -498,226 +677,42 @@ See also `image-transform-backends' for the backend API."
   "Like `image-transform', but find IMAGE at point if not supplied.
 and refreshes window display. Intended to be used for user level
 commands."
-  (unless image
-    (unless (setq image (get-image))
-      (error "No image at point")))
-
-  (prog1 (apply 'image-transform image specs)
-    (force-window-update (selected-window))))
-
+  (let ((image (or image (get-image))))
+    (unless image
+      (error "No image at point"))
+    (prog1 (apply 'image-transform image specs)
+      (force-window-update (selected-window)))))
 
 
-;;; BASIC READERS
-
-;; convert backend can accept a multitude of string inputs. 
-(defvar image-tr-accept-unparsed nil
-  "Whether numeric writers should accepts non parseble strings as
-  valid input.")
-
-(defun image-tr-parse:number (str)
-  (if (numpberp str)
-      str
-    (when (string-match "^ *\\([0-9.]+\\) *$" str)
-      (string-to-number (match-string 1 str)))))
-
-(defun image-tr-reader:number (key value)
-  "Basic processor of numeric arguments.
-SPECS is a list of old image specs. KYEVALUE is a cons of (KEY. VALUE)
-where VALUE is a new setting of KEY.
-
-VALUE could be a string, in which case an attempt is made to
-convert to a numeric value. If failed and
-`image-tr-accept-unparsed' is nil, signal 'next-backend error in
-order to pass the ball to next backend."
-  (setq value
-        (pcase value
-          ((or (pred null)
-               (pred numberp)) value)
-          ((pred stringp)
-           (or (image-tr-parse:number value)
-               (if image-tr-accept-unparsed
-                   value
-                 (signal 'next-backend
-                         (list (format "Cannot parse %s value" key))))))
-          (_ (signal 'next-backend
-                     (list (format "Invalid type of argument %s" key))))))
-  (list key (if (numberp value)
-                (number-to-string value)
-              value)))
-
-(defalias 'image-tr-reader:degrees 'image-tr-reader:number)
-(defalias 'image-tr-reader:value 'image-tr-reader:number)
-
-(defun image-tr-parse:scale (str)
-  (if (numberp str)
-      str
-    (when (string-match "^ *\\([0-9.]+\\)% *$" str)
-      (string-to-number (match-string 1 str)))))
-
-(defun image-tr-reader:scale (key value)
-  "Process scale argument.
-VALUE could be a number or string of the form \"N%\" where N is a
-number, giving the percentage by which to scale the image.
-
-For \"convert\" backend scale can take additional geometry
-specifications."
-  (setq value
-        (pcase value
-          ((or (pred null)
-               (pred numberp)) value)
-          ((pred stringp)
-           (or (image-tr-parse:scale value)
-               (if image-tr-accept-unparsed
-                   value
-                 (signal 'next-backend
-                         (list (format "Cannot parse %s value" key))))))
-          (_ (signal 'next-backend
-                     (list (format "Invalid type of argument %s" key))))))
-  (list key (if (numberp value)
-                (concat (number-to-string value) "%")
-              value)))
-;; (image-tr-reader:scale :key 435)
-;; (image-tr-reader:scale :key "435%")
-;; (image-tr-reader:scale :key "sf435%")
-
-(defun image-tr-reader:boolean (key value)
-  "The option of type boolean is either present or not."
-  (list key value))
-
-(defun image-tr-parse:geometry (geom)
-  "Parse ImageMagick geometry specification.
-
-X below can be eitehr \"x\",\"X\" or \" \" (space).
-
-scale%  	Height and width both scaled by specified percentage.
-xscaleXyscale% 	Height and width individually scaled by specified percentages.
-width   	Width given, height automagically selected to preserve aspect ratio.
-Xheight 	Height given, width automagically selected to preserve aspect ratio.
-widthXheight 	Maximum values of height and width given, aspect ratio preserved.
-widthXheight^ 	Minimum values of width and height given, aspect ratio preserved.
-widthXheight! 	Width and height emphatically given, original aspect ratio ignored.
-widthXheight> 	Shrinks an image with dimension(s) larger than the corresponding width and/or height argument(s).
-widthXheight< 	Enlarges an image with dimension(s) smaller than the corresponding width and/or height argument(s).
-area@   	Resize image to have specified area in pixels. Aspect ratio is preserved.
-
-Return a list of the form (W H o) where o is an operator giving
-an additional meaning to W and H. Could be ^ ! > < or @.
-
-Offset geometry from \"convert\" specifications is not yet
-supported. See http://www.imagemagick.org/script/command-line-processing.php#geometry"
-  (when (and (stringp geom)
-             (string-match
-              "^ *\\([0-9.]+\\)?[xX ]?\\([0-9.]+\\)?\\([@><^!%]\\)? *$"
-              geom))
-    (let ((W (match-string 1 geom))
-          (H (match-string 2 geom))
-          (o (match-string 3 geom)))
-      (list (and W (string-to-number W))
-            (and H (string-to-number H))
-            o))))
-
-;; (image-tr-parse:geometry "444")
-;; (image-tr-parse:geometry "23x444!")
-;; (image-tr-parse:geometry "x444")
-;; (image-tr-parse:geometry "444x")
-;; (image-tr-parse:geometry "x444")
-;; (image-tr-parse:geometry "444@")
-;; (image-tr-parse:geometry "444 555!")
-;; (image-tr-parse:geometry "444x555%")
-
-(defun image-tr-reader:geometry (key value)
-  "Geometry reader.
-VALUE can be
-
- - numeric - interpreted as width.
-
- - string - interpreted as \"convert\" specification. See
-   `image-tr-parse:geometry'.
-
- - cons (W . H) or list (W H) - rescale the image maximally such
-   that new image fits into (W . H) box. Aspect ratio
-   preserved. Equivalent to WxH \"convert\" specification.
-
- - list (W H o) - Similar to \"WxHo\" specification of where o
- can be \"!\",\"%\",\"^\",\"@\",\">\" or \"<\".
-
-For example, to force the new dimensions of the image you should
-supply (list W H \"!\")."
-
-  ;; If `image-tr-accept-unparsed' is non-nil, accepts strings that
-  ;; don't match the above pattern. Otherwise pass to next backend by
-  ;; signaling 'next-backend.
-
-  (setq value
-        (pcase value
-          ((pred null) value)
-          ((pred numberp) (number-to-string value))
-          (`(,w ,h ,o . nil) (concat (and w (number-to-string w)) "x"
-                                     (and h (number-to-string h)) o))
-          ;; (`(,w . nil) (number-to-string w))
-          ((or `(,w ,h . nil) `(,w . ,h))
-           (concat (and w (number-to-string w)) "x"
-                   (and h (number-to-string h))))
-          ((pred stringp)
-           (if (or (image-tr-parse:geometry value)
-                   image-tr-accept-unparsed)
-               value
-             (signal 'next-backend
-                     (list (format "Cannot parse %s geometry argument" key)))))
-          (_ (signal 'next-backend
-                     (list (format "Invalid %s geometry specification" key))))))
-  (lsit key value))
-
-;; (image-tr-reader:geometry '() '(:resize . (40 50 "!")))
-;; (image-tr-reader:geometry '() '(:resize . (40 50)))
-;; (image-tr-reader:geometry '() '(:resize . (40 nil)))
-;; (image-tr-reader:geometry '() '(:resize . (nil 40)))
-;; (image-tr-reader:geometry '() '(:resize . (40 . 50)))
-
-(defun image-tr-reader:choice (key value &rest choices)
-  "Checks if value is in CHOICES list.
-Return '(key value) if true, signal 'next-backend error
-otherwise."
-  (if (member value choices)
-      (list key value)
-    (signal 'next-backend
-            (list (format "%s is not a valid value of option %s" value key)))))
-
-
-
-;;; IMAGEMAGICK BACKEND
+;;;; Backend: Imagemagick
 
 (defvar image-transform-features:imagemagick
   '((:background "Background for images with transparent background")
-    (:resize "If number treat as width. If string, should be of
-             the form Wx, xH, WxH where x is arbitrary string not
-             containing numbers. If cons: (W . H)."
-             geometry)
+    (:resize
+     "If number treat as width. If string, should be of the form
+     \"Wx\", \"xH\", \"WxH\" where x is arbitrary string not
+     containing numbers. If a cons, it is interpreted as (Width
+     . Height)." geometry)
     (:rotate "Rotation in degrees" degrees)
-    (:scale "Scale in percent. Can be a number or numeric string."
-            scale))
+    (:scale "Scale in percent. Can be a number or numeric string." scale))
   "Alist of supported features by Emacs ImageMagick backend.
 Each element is a list of the form (FEATURE DOC READER-TYPE).
 See `image-transform-backends' for a full description.")
 
-
 (defun image-transform:imagemagick (image &rest specs)
-  "Image transform Emacs ImageMagick backend.
-See `image-transform' for the description of backends and SPEC
-argument.
+  "Emacs's ImageMagick transform backend.
+IMAGE and SPECS are as in `image-transform'.
 
-See `image-transform-features:imagemagick' for transforms
-accepted by this backend."
+See `image-transform-features:imagemagick' for transform
+specifications accepted by this backend."
 
   (unless (image-type-available-p 'imagemagick)
-    (signal 'next-backend '("Emacs was not build with ImageMagick support")))
+    (signal 'next-backend '("Emacs wasn't built with ImageMagick support")))
 
-  (setq specs
-        (image-tr--normalize-boolean-specs specs 'imagemagick))
-  
+  (setq specs (image-tr--normalize-boolean-specs specs 'imagemagick))
   (image-tr--check-unsupported-features image specs 'imagemagick)
   
-  (let* ((newtrs (image-tr--read-newspecs specs 'imagemagick))
+  (let* ((newtrs (image-tr--normalize-specs specs 'imagemagick))
          (trlist (image-tr--add-transforms
                   (image-get-transforms image) newtrs)))
 
@@ -732,7 +727,7 @@ accepted by this backend."
              (when (assoc (car s) image-transform-features:imagemagick)
                (pcase (cons (car s) (cadr s))
                  (`(:resize . ,resize)
-                  (pcase (image-tr-parse:geometry resize)
+                  (pcase (image-transform-parse:geometry resize)
                     (`(,scale nil "%") (image-tr--rescale image scale))
                     (`(,sW ,sH "%") (image-tr--rescale image sW sH))
                     (`(,area "@") (error "Area geometry is not implemented yet"))
@@ -779,10 +774,10 @@ accepted by this backend."
                  (`(:rotate . ,rot)
                   (plist-put (cdr image) :rotation
                              (mod (+ (or (plist-get (cdr image) :rotation) 0.0)
-                                     (image-tr-parse:number rot))
+                                     (image-transform-parse:number rot))
                                   360)))
                  (`(:scale . ,scale)
-                  (image-tr--rescale image (image-tr-parse:scale scale)))
+                  (image-tr--rescale image (image-transform-parse:scale scale)))
                  (`(:background . ,val)
                   (plist-put (cdr image) :background val))
                  ;; should never reach this place
@@ -794,11 +789,10 @@ accepted by this backend."
 
 
 
-;;; CONVERT BACKEND
+;;;; Backend: Convert
 
 (defvar image-transform-features:convert 
-  '(
-    (:-- "Image Settings")
+  '((:-- "Image Settings")
     ;; (:adjoin boolean 	"join images into a single multi-image file")
     ;; (:affine 'matrix	"affine transform matrix")
     (:antialias "remove pixel-aliasing" boolean )
@@ -1142,7 +1136,7 @@ accepted by this backend."
   (image-tr--check-unsupported-features image specs 'convert)
   
   (let* ((image-tr-accept-unparsed t) ; pass directly to convert
-         (newtrs (image-tr--read-newspecs specs 'convert))
+         (newtrs (image-tr--normalize-specs specs 'convert))
          (trlist (image-tr--add-transforms
                   (image-get-transforms image) newtrs)))
     (plist-put (cdr image) :transforms trlist)
