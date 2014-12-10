@@ -457,7 +457,7 @@ to insert.  A float value 0.0 - 1.0 means relative to the width or
 height of the image; integer values are taken as pixel values.
 If MAP is provided, it must be a keymap what will be used as
 text property keymap. A special value of t means to use
-`image-transform-map'"
+`image-manipulation-map'"
   ;; Use a space as least likely to cause trouble when it's a hidden
   ;; character in the buffer.
   (unless string (setq string " "))
@@ -475,7 +475,7 @@ text property keymap. A special value of t means to use
     ;; of it loses anyway.)
     (setq image (cons 'image (cdr image))))
   (when (eq map t)
-    (setq map image-transform-map))
+    (setq map image-manipulation-map))
   (let ((start (point)))
     (insert string)
     (add-text-properties start (point)
@@ -526,7 +526,6 @@ The image is automatically split into ROWS x COLS slices."
       (insert (propertize "\n" 'line-height t)))))
 
 
-
 ;;;###autoload
 (defun remove-images (start end &optional buffer)
   "Remove images between START and END in BUFFER.
@@ -564,6 +563,7 @@ BUFFER nil or omitted means use the current buffer."
 	      (setq found t))))))
       (setq path (cdr path)))
     (if found filename)))
+
 
 ;;;###autoload
 (defun find-image (specs)
