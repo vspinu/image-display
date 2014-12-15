@@ -441,7 +441,7 @@ means display it in the right marginal area."
 
 
 ;;;###autoload
-(defun insert-image (image &optional string area slice)
+(defun insert-image (image &optional string area slice map)
   "Insert IMAGE into current buffer at point.
 IMAGE is displayed by inserting STRING into the current buffer
 with a `display' property whose value is the image.  STRING
@@ -454,7 +454,10 @@ SLICE specifies slice of IMAGE to insert.  SLICE nil or omitted
 means insert whole image.  SLICE is a list (X Y WIDTH HEIGHT)
 specifying the X and Y positions and WIDTH and HEIGHT of image area
 to insert.  A float value 0.0 - 1.0 means relative to the width or
-height of the image; integer values are taken as pixel values."
+height of the image; integer values are taken as pixel values.
+If MAP is provided, it must be a keymap what will be used as
+text property keymap. A special value of t means to use
+`image-manipulation-map'"
   ;; Use a space as least likely to cause trouble when it's a hidden
   ;; character in the buffer.
   (unless string (setq string " "))
@@ -471,12 +474,16 @@ height of the image; integer values are taken as pixel values."
     ;; cut-and-paste.  (Yanking killed image text next to another copy
     ;; of it loses anyway.)
     (setq image (cons 'image (cdr image))))
+  (when (eq map t)
+    (setq map image-manipulation-map))
   (let ((start (point)))
     (insert string)
     (add-text-properties start (point)
 			 `(display ,(if slice
 					(list (cons 'slice slice) image)
-				      image) rear-nonsticky (display)))))
+				      image)
+                                   rear-nonsticky (display)
+                                   keymap ,map))))
 
 
 ;;;###autoload
@@ -519,7 +526,6 @@ The image is automatically split into ROWS x COLS slices."
       (insert (propertize "\n" 'line-height t)))))
 
 
-
 ;;;###autoload
 (defun remove-images (start end &optional buffer)
   "Remove images between START and END in BUFFER.
@@ -557,6 +563,7 @@ BUFFER nil or omitted means use the current buffer."
 	      (setq found t))))))
       (setq path (cdr path)))
     (if found filename)))
+
 
 ;;;###autoload
 (defun find-image (specs)
