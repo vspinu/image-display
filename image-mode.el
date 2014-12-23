@@ -1114,12 +1114,19 @@ defaults to `image-at-point'."
     (define-key map "sS" 'image-stretch-to-fit-window)
     (define-key map "sf" 'image-scale-frame-to-fit-image)
     (define-key map "ta" 'image-add-transform)
-    (define-key map "tk" 'image-delete-transform)
     (define-key map "td" 'image-delete-transform)
+    (define-key map "tk" 'image-delete-transform)
+    (define-key map "tm" 'image-modify-transform)
     (define-key map "tl" 'image-list-transforms)
     (define-key map "B" 'image-change-background)
     (easy-menu-define image-mode-menu map "Local Image Menu."
       '("Manipulate"
+	("Transforms..."
+	 :filter image-tr--all-transforms-menu)
+	("Current Transforms..."
+	 :active (cdr (image-get-transforms))
+	 :filter image-tr--current-transforms-menu)
+	"--"
 	["Scale to Window" image-scale-to-fit-window
 	 :help "Maximally resize image to fit into window"]
 	["Scale to Window Height" image-scale-to-fit-height
@@ -1139,56 +1146,41 @@ defaults to `image-at-point'."
 	["Rotate Image Right" image-rotate-right]
 	["Rotate Image Left" image-rotate-left]
 	"--"
-	["Add Transform" image-add-transform
-	 :help "Add Transforms Interactively"]
-	["Delete Transform" image-delete-transform]
-	["List Transforms" image-list-transforms]
-	"--"
-	("All Transforms..." :filter image-tr--transforms-menu)
-	("Current Transforms...")
-	"--"
-	["Animate Image" image-toggle-animation :style toggle
-	 :selected (let ((image (image-at-point)))
-		     (and image (image-animate-timer image)))
+	("Animation..."
 	 :active (image-multi-frame-p (image-at-point))
-         :help "Toggle image animation"]
-	["Loop Animation"
-	 (lambda () (interactive)
-	   (setq image-animate-loop (not image-animate-loop))
-	   ;; FIXME this is a hacky way to make it affect a currently
-	   ;; animating image.
-	   (when (let ((image (image-at-point)))
-		   (and image (image-animate-timer image)))
-	     (image-toggle-animation)
-	     (image-toggle-animation)))
-	 :style toggle :selected image-animate-loop
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Animate images once, or forever?"]
-	["Reverse Animation" image-reverse-speed
-	 :style toggle :selected (let ((image (image-at-point)))
-				   (and image (<
-					       (image-animate-get-speed image)
-					       0)))
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Reverse direction of this image's animation?"]
-	["Speed Up Animation" image-increase-speed
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Speed up this image's animation"]
-	["Slow Down Animation" image-decrease-speed
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Slow down this image's animation"]
-	["Reset Animation Speed" image-reset-speed
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Reset the speed of this image's animation"]
-	["Next Frame" image-next-frame
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Show the next frame of this image"]
-	["Previous Frame" image-previous-frame
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Show the previous frame of this image"]
-	["Goto Frame..." image-goto-frame
-	 :active (image-multi-frame-p (image-at-point))
-	 :help "Show a specific frame of this image"]
+	 ["Animate Image" image-toggle-animation :style toggle
+	  :selected (let ((image (image-at-point)))
+		      (and image (image-animate-timer image)))
+	  :help "Toggle image animation"]
+	 ["Loop Animation"
+	  (lambda () (interactive)
+	    (setq image-animate-loop (not image-animate-loop))
+	    ;; FIXME this is a hacky way to make it affect a currently
+	    ;; animating image.
+	    (when (let ((image (image-at-point)))
+		    (and image (image-animate-timer image)))
+	      (image-toggle-animation)
+	      (image-toggle-animation)))
+	  :style toggle :selected image-animate-loop
+	  :help "Animate images once, or forever?"]
+	 ["Reverse Animation" image-reverse-speed
+	  :style toggle :selected (let ((image (image-at-point)))
+				    (and image (<
+						(image-animate-get-speed image)
+						0)))
+	  :help "Reverse direction of this image's animation?"]
+	 ["Speed Up Animation" image-increase-speed
+	  :help "Speed up this image's animation"]
+	 ["Slow Down Animation" image-decrease-speed
+	  :help "Slow down this image's animation"]
+	 ["Reset Animation Speed" image-reset-speed
+	  :help "Reset the speed of this image's animation"]
+	 ["Next Frame" image-next-frame
+	  :help "Show the next frame of this image"]
+	 ["Previous Frame" image-previous-frame
+	  :help "Show the previous frame of this image"]
+	 ["Goto Frame..." image-goto-frame
+	  :help "Show a specific frame of this image"])
 	))
     map)
   "Image local manipulation keymap.

@@ -114,17 +114,22 @@ transformed LIST."
     list))
 
 (defun image-tr--delete-transforms (image transforms)
-  "Remove TRANSFORMS from IMAGE destructively."
+  "Remove IMAGE's TRANSFORMS destructively."
   (image-tr--delete-properties (image-get image :transforms) transforms)
   image)
 
-;; (defun image-tr--add (trlist key value)
-;;   (if (not (null trlist))
-;;       (let ((lcdr (nthcdr (1- (length trlist)) trlist)))
-;;         (setcdr lcdr (list key value)))
-;;     (push value trlist)
-;;     (push key trlist))
-;;   trlist)
+(defun image-tr--modify-transform (image N new-val)
+  "Modify IMAGE N's transform destructively."
+  (let ((trs (cdr (image-get-transforms image)))
+	(i N))
+    (while (> i 1)
+      (setq trs (cddr trs)
+	    i (1- i)))
+    (if trs
+	(setcdr trs (cons new-val (cddr trs)))
+      (error "There are fewer transforms than %s" N))
+    image))
+
 
 (defun image-tr--osize (image)
   (let ((osize (image-get image :osize)))
@@ -1070,28 +1075,58 @@ this backend."
 
 ;;; Transform submenus
 
-(defun image-tr--transforms-menu (menu &optional backend)
-  "Generate a submenu of transforms for BACKEND."
-  (if backend
-      (mapcar (lambda (features)
-		(append (list (car features))
-		      (mapcar (lambda (el)
-				`[,(symbol-name (car el))
-				  (lambda () (interactive) (image-add-transform nil ,(car el)))
-				  :help ,(cadr el)])
-			      (cdr features))))
-	      (symbol-value (intern (format "image-transform-features:%s" backend))))
-    (mapcar (lambda (bknd)
-	      `(,(format "%s..." (capitalize (symbol-name bknd)))
-		,@(image-tr--transforms-menu menu bknd)))
-	    image-transform-backends)))
+(defun image-tr--current-transforms-menu (menu)
+  "Generate submenu for current transforms"
+  (let ((trs (cdr (image-get-transforms))))
+    (cl-loop for tr on trs by #'cddr
+	     for i = 1 then (1+ i)
+	     collect `[,(format "%s %s" (car tr) (cadr tr))
+		       (lambda () (interactive) (image-modify-transform nil ,i))
+		       :help "Modify this transform"])))
 
-(image-tr--transforms-menu nil 'native)
+(defun image-tr--all-transforms-menu (menu)
+  "Generate a submenu of all transforms."
+  (let (all)
+    (dolist (bknd image-transform-backends)
+      (let ((features (symbol-value (intern (format "image-transform-features:%s" bknd)))))
+	(dolist (fs features)
+	  (setq all (lax-plist-put all (car fs) (append (lax-plist-get all (car fs))
+							(cdr fs)))))))
+    (append
+     '(["Add" image-add-transform :help "Add Transforms Interactively"]
+       ["Delete" image-delete-transform]
+       ["Modify" image-modify-transform]
+       ["List" image-list-transforms]
+       "--")
+     (sort (cl-loop for gr on all by #'cddr
+		    collect (cons (car gr)
+				  (mapcar (lambda (el)
+					    `[,(symbol-name (car el))
+					      (lambda () (interactive) (image-add-transform nil ,(car el)))
+					      :help ,(cadr el)])
+					  (cl-delete-duplicates (delq nil (cadr gr))
+								:test (lambda (a b) (eq (car a) (car b)))))))
+	   (lambda (a b) (string< (car a) (car b)))))))
+
+;; (image-tr--transforms-menu nil)
 
 
 ;;; Transform UI
 
 (defvar image-tr--add-transform-hist nil)
+
+(defun image-tr--read-transform (tr)
+  "Interactively ask for value for the transform TR."
+  (let* ((type (nth 2 (cl-loop for bknd in image-transform-backends
+			       for val = (image-tr--get-feature tr bknd)
+			       if val return val)))
+	 (prompt (format "%s (%s): " tr type)))
+    (pcase type
+      (`boolean t)
+      (`(choice . ,opts) (completing-read prompt opts))
+      (`number (read-number prompt))
+      (`filename (read-file-name prompt))
+      (_ (read-string prompt)))))
 
 (defun image-add-transform (&optional image transform)
   "Interactively add transform to IMAGE.
@@ -1104,16 +1139,7 @@ use `image-transform' instead."
 		 (symbol-name transform)
 	       (completing-read "Transform: " allopts nil t nil 'image-tr--add-transform-hist)))
          (tr-symb (intern tr))
-         (type (nth 2 (cl-loop for bknd in image-transform-backends
-			       for val = (image-tr--get-feature tr-symb bknd)
-			       if val return val)))
-         (prompt (format "%s: " tr))
-         (value (pcase type
-                  (`boolean t)
-                  (`(choice . ,opts) (completing-read prompt opts))
-                  (`number (read-number prompt))
-                  (`filename (read-file-name prompt))
-                  (_ (read-string prompt)))))
+	 (value (image-tr--read-transform tr-symb)))
     (image-transform-interactive image tr-symb value)))
 
 (defun image-list-transforms (&optional image)
@@ -1132,14 +1158,42 @@ programs, use `image-tr--delete-transforms' instead."
 		       if (keywordp el) collect (symbol-name el)))
          (tr (or transform
 		 (if trs
-		     (intern (completing-read "Delete transform: " (append '("*ALL*") trs) nil t))
-		   (message "No transforms for current image")
-		   nil))))
-    (when tr
-      (if (equal tr '*ALL*)
-          (image-put image :transforms '(tr))
-        (image-tr--delete-transforms image (list tr))))
-    (image-transform image)))
+		     (intern (completing-read "Delete transform: "
+					      (append '("*ALL*") trs) nil t))
+		   (error "No transforms for current image")))))
+    (if (equal tr '*ALL*)
+	(image-put image :transforms '(tr))
+      (image-tr--delete-transforms image (list tr)))
+    (image-transform-interactive image)))
+
+(defun image-modify-transform (&optional image N)
+  "Modify IMAGE's Nth transform.
+When called interactively ask for a transform. IMAGE defaults to
+`image-at-point'."
+  (interactive)
+  (setq image (or image (image-at-point)))
+  (let* ((ixs)
+	 (counter 0)
+	 (trs (cdr (image-get-transforms image)))
+	 (names (and (not N)
+		     (cl-loop for el in trs by #'cddr
+			      collect (let ((ix (1+ (or (plist-get ixs el) 0))))
+					(setq ixs (plist-put ixs el ix)
+					      counter (1+ counter))
+					(propertize
+					 (if (= ix 1)
+					     (symbol-name el)
+					   (format "%s<%d>" el ix))
+					 :tr-N counter)))))
+         (N (or N
+		(if names
+		    (get-text-property 0 :tr-N
+				       (completing-read "Modify transform: " names nil t))
+		  (error "No transforms for current image"))))
+	 (tr (nth (- (* 2 N) 2) trs))
+	 (value (image-tr--read-transform tr)))
+    (image-tr--modify-transform image N value)
+    (image-transform-interactive image)))
 
 (provide 'image-transform)
 ;;; image-transform.el ends here
