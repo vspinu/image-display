@@ -1113,11 +1113,11 @@ defaults to `image-at-point'."
     (define-key map "sw" 'image-scale-to-fit-width)
     (define-key map "sS" 'image-stretch-to-fit-window)
     (define-key map "sf" 'image-scale-frame-to-fit-image)
-    (define-key map "ta" 'image-add-transform)
-    (define-key map "td" 'image-delete-transform)
-    (define-key map "tk" 'image-delete-transform)
-    (define-key map "tm" 'image-modify-transform)
-    (define-key map "tl" 'image-list-transforms)
+    (define-key map "ta" 'image-transform-add)
+    (define-key map "td" 'image-transform-delete)
+    (define-key map "tk" 'image-transform-delete)
+    (define-key map "tm" 'image-transform-modify)
+    (define-key map "tl" 'image-transform-list)
     (define-key map "B" 'image-change-background)
     (easy-menu-define image-mode-menu map "Local Image Menu."
       '("Manipulate"

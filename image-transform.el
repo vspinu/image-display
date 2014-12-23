@@ -1081,7 +1081,7 @@ this backend."
     (cl-loop for tr on trs by #'cddr
 	     for i = 1 then (1+ i)
 	     collect `[,(format "%s %s" (car tr) (cadr tr))
-		       (lambda () (interactive) (image-modify-transform nil ,i))
+		       (lambda () (interactive) (image-transform-modify nil ,i))
 		       :help "Modify this transform"])))
 
 (defun image-tr--all-transforms-menu (menu)
@@ -1093,16 +1093,16 @@ this backend."
 	  (setq all (lax-plist-put all (car fs) (append (lax-plist-get all (car fs))
 							(cdr fs)))))))
     (append
-     '(["Add" image-add-transform :help "Add Transforms Interactively"]
-       ["Delete" image-delete-transform]
-       ["Modify" image-modify-transform]
-       ["List" image-list-transforms]
+     '(["Add" image-transform-add :help "Add Transforms Interactively"]
+       ["Delete" image-transform-delete]
+       ["Modify" image-transform-modify]
+       ["List" image-transform-list]
        "--")
      (sort (cl-loop for gr on all by #'cddr
 		    collect (cons (car gr)
 				  (mapcar (lambda (el)
 					    `[,(symbol-name (car el))
-					      (lambda () (interactive) (image-add-transform nil ,(car el)))
+					      (lambda () (interactive) (image-transform-add nil ,(car el)))
 					      :help ,(cadr el)])
 					  (cl-delete-duplicates (delq nil (cadr gr))
 								:test (lambda (a b) (eq (car a) (car b)))))))
@@ -1128,7 +1128,7 @@ this backend."
       (`filename (read-file-name prompt))
       (_ (read-string prompt)))))
 
-(defun image-add-transform (&optional image transform)
+(defun image-transform-add (&optional image transform)
   "Interactively add transform to IMAGE.
 IMAGE defaults to `image-at-point'.  TRANSFORM is a keyword
 naming the transformation. Don't use this function in programs,
@@ -1142,13 +1142,13 @@ use `image-transform' instead."
 	 (value (image-tr--read-transform tr-symb)))
     (image-transform-interactive image tr-symb value)))
 
-(defun image-list-transforms (&optional image)
+(defun image-transform-list (&optional image)
   "Print all transforms associated with IMAGE.
 IMAGE defaults to `image-at-point'."
   (interactive)
   (message "%s" (cdr (image-get-transforms image))))
 
-(defun image-delete-transform (&optional image transform)
+(defun image-transform-delete (&optional image transform)
   "Remove from IMAGE the TRANSFORM.
 IMAGE defaults to `image-at-point'.  Don't use this function in
 programs, use `image-tr--delete-transforms' instead."
@@ -1166,7 +1166,7 @@ programs, use `image-tr--delete-transforms' instead."
       (image-tr--delete-transforms image (list tr)))
     (image-transform-interactive image)))
 
-(defun image-modify-transform (&optional image N)
+(defun image-transform-modify (&optional image N)
   "Modify IMAGE's Nth transform.
 When called interactively ask for a transform. IMAGE defaults to
 `image-at-point'."
