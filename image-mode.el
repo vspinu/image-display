@@ -1135,15 +1135,17 @@ defaults to `image-at-point'."
 	["Scale Reset" (lambda () (interactive) (image-scale-increase 0))
 	 :help "Scale Down" :keys "0"]
 	"--"
-	["Rotate Image..." image-rotate]
+	["Rotate Image by Angle" image-rotate]
 	["Rotate Image Right" image-rotate-right]
 	["Rotate Image Left" image-rotate-left]
 	"--"
-	["Change Image Background..." image-change-background]
-	"--"
-	["Add Transform" image-add-transform]
+	["Add Transform" image-add-transform
+	 :help "Add Transforms Interactively"]
 	["Delete Transform" image-delete-transform]
 	["List Transforms" image-list-transforms]
+	"--"
+	("All Transforms..." :filter image-tr--transforms-menu)
+	("Current Transforms...")
 	"--"
 	["Animate Image" image-toggle-animation :style toggle
 	 :selected (let ((image (image-at-point)))

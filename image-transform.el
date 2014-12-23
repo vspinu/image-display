@@ -429,18 +429,33 @@ otherwise."
 
 ;;; Transform API utilities
 
+(defun image-tr--available-features (backend)
+  "Get the names of all available features for BACKEND."
+  (cl-mapcan (lambda (list) (mapcar #'car (cdr list)))
+	     (symbol-value (intern (format "image-transform-features:%s" backend)))))
+
+(defun image-tr--get-feature (name features)
+  "Retrieve feature with NAME from an alist of lists of FEATURES.
+If FEATURES is a symbol, it is interpreted as a backend name."
+  (let ((feats (if (symbolp features)
+		   (symbol-value (intern (format "image-transform-features:%s" features)))
+		 features)))
+    (cl-loop for flist in feats
+	     for f = (assoc name (cdr flist))
+	     if f return f)))
+
 (defun image-tr--unsupported-features (specs backend)
   "Return unsupported features from SPECS by BACKEND.
 SPECS are as in `image-transform'.  BACKEND is a symbol or a
 string."
-  (let ((features (cl-loop for s in specs if (keywordp s) collect s))
-        (available (symbol-value
-                    (intern (concat "image-transform-features:"
-                                    (if (symbolp backend)
-                                        (symbol-name backend)
-                                      backend))))))
+  (let* ((features (cl-loop for s in specs if (keywordp s) collect s))
+	 (available (symbol-value
+		     (intern (concat "image-transform-features:"
+				     (if (symbolp backend)
+					 (symbol-name backend)
+				       backend))))))
     (cl-loop for f in features
-             unless (assoc f available)
+             unless (image-tr--get-feature f available)
              collect f)))
 
 (defun image-tr--check-unsupported-features (image newspecs backend)
@@ -458,23 +473,23 @@ NEWSPECS are as SPECS in `image-transform'."
 
 (defun image-tr--normalize-specs (specs backend)
   "Normalize SPECS given the spec types declared in the BACKEND."
-  (cl-loop for s on specs by 'cddr append
-           (let* ((el (assoc (car s)
-                             (symbol-value
-                              (intern (concat "image-transform-features:"
-                                              (symbol-name backend))))))
-                  (read-type (nth 2 el))
-                  (reader (intern (concat "image-transform-spec:"
-                                          (if (listp read-type)
-                                              (symbol-name (car read-type))
-                                            (symbol-name read-type))))))
-             (unless el
-               (error "No reader for %s in %s backend" (car s) backend))
-             (if (fboundp reader)
-                 (if (listp read-type)
-                     (apply reader (car s) (cadr s) (cdr read-type))
-                   (funcall reader (car s) (cadr s)))
-               (list (car s) (cadr s))))))
+  (let ((available (symbol-value
+		    (intern (concat "image-transform-features:"
+				    (symbol-name backend))))))
+    (cl-loop for s on specs by 'cddr append
+	     (let* ((el (image-tr--get-feature (car s) available))
+		    (type (nth 2 el))
+		    (reader (intern (concat "image-transform-spec:"
+					    (if (listp type)
+						(symbol-name (car type))
+					      (symbol-name type))))))
+	       (unless el
+		 (error "No reader for %s in %s backend" (car s) backend))
+	       (if (fboundp reader)
+		   (if (listp type)
+		       (apply reader (car s) (cadr s) (cdr type))
+		     (funcall reader (car s) (cadr s)))
+		 (list (car s) (cadr s)))))))
 
 (defun image-tr--add-transforms (trs newtrs)
   "Destructively populate TRS with NEWTRS transforms.
@@ -604,8 +619,7 @@ being dispatched to the backend functions:
      *`fit-stretch' - stretch the image to fit to both height and
       width of WIN.
 
-  :save-to-file - save the transformed image into file and
-  replace the current image specification with the new file (not
+  :save-to - a file to save the transformed image to (not
   implemented yet)
  
   :window - a window to be used when :resize is a
@@ -669,11 +683,13 @@ Intended to be used for user level commands.  IMAGE defaults to
 ;;;; Native Backend
 
 (defvar image-transform-features:native
-  '((:background "Background for images with transparent background")
-    (:resize "Resize the image" geometry)
-    (:rotate "Rotation in degrees" degrees)
-    (:scale "Scale in percent. Can be a number or numeric string." scale)
-    (:flatten "Does nothing. It's here for compatibility with 'convert' backend only." boolean))
+  '(("Image Settings"
+     (:background "Background for images with transparent background")
+     (:flatten "Does nothing. It's here for compatibility with 'convert' backend only." boolean))
+    ("Geometry"
+     (:resize "Resize the image" geometry)
+     (:rotate "Rotation in degrees" degrees)
+     (:scale "Scale in percent. Can be a number or numeric string." scale)))
   "Alist of supported features by 'native' backend.
 Each element is a list of the form (FEATURE DOC READER-TYPE).
 See `image-transform-backends' for a full description.")
@@ -704,7 +720,7 @@ specifications accepted by this backend."
     
     ;; now apply the transforms
     (cl-loop for s on (cdr trlist) by 'cddr do
-             (when (assoc (car s) image-transform-features:native)
+             (when (image-tr--get-feature (car s) image-transform-features:native)
                (pcase (cons (car s) (cadr s))
                  (`(:resize . ,resize)
                   (pcase (image-transform-parse:geometry resize)
@@ -770,153 +786,178 @@ specifications accepted by this backend."
 ;;;; Convert Backend
 
 (defvar image-transform-features:convert 
+  '(("Image Settings"
+     (:antialias "remove pixel-aliasing" boolean)
+     (:background "background color" color)
+     (:bordercolor "border color" color)
+     (:caption "annotate image with a caption" string)
+     (:colors "preferred number of colors in the image" number)
+     (:colorspace "alternate image colorspace"
+		  (choice CMY CMYK Gray HCL HCLp HSB HSI HSL HSV
+			  HWB Lab LCHab LCHuv LMS Log Luv OHTA
+			  Rec601YCbCr Rec709YCbCr RGB scRGB sRGB
+			  Transparent XYZ YCbCr YCC YDbDr YIQ
+			  YPbPr YUV))
+     (:comment "annotate image with comment" string)
+     (:density "horizontal and vertical density of the image" geometry)
+     (:depth "image depth" value)
+     (:fill "color to use when filling a graphic primitive" color)
+     (:filter "use this filter when resizing an image"
+	      (choice Point Hermite Cubic Box Gaussian Catrom
+		      Triangle Quadratic Mitchell))
+     (:flatten "flatten a sequence of images" boolean)
+     (:fuzz "colors within this distance are considered equal" distance)
+     (:interlace "type of image interlacing scheme"
+		 (choice none line plane partition JPEG GIF PNG))
+     (:interpolate "pixel color interpolation method"
+		   (choice integer nearest-neighbor average
+			   bilinear mesh bicubic spline filter ))
+     (:quality "JPEG/MIFF/PNG compression level" value)
+     (:sampling-factor "horizontal and vertical sampling factor" geometry)
+     (:statistic	"replace each pixel with corresponding statistic from the neighborhood"
+			(choice Gradient Maximum Minimum Mean Median Mode Nonpeak))
+     (:texture "name of texture to tile onto the image background" filename)
+     (:tile-offset "tile offset" geometry))
 
-  '((:-- "Image Settings")
-    (:antialias "remove pixel-aliasing" boolean)
-    (:background "background color" color)
-    (:bordercolor "border color" color)
-    (:caption "annotate image with a caption" string)
-    (:colors "preferred number of colors in the image" number)
-    (:colorspace "alternate image colorspace"
-                 (choice CMY CMYK Gray HCL HCLp HSB HSI HSL HSV
-                         HWB Lab LCHab LCHuv LMS Log Luv OHTA
-                         Rec601YCbCr Rec709YCbCr RGB scRGB sRGB
-                         Transparent XYZ YCbCr YCC YDbDr YIQ
-                         YPbPr YUV))
-    (:comment "annotate image with comment" string)
-    (:density "horizontal and vertical density of the image" geometry)
-    (:depth "image depth" value)
-    (:fill "color to use when filling a graphic primitive" color)
-    (:filter "use this filter when resizing an image"
-             (choice Point Hermite Cubic Box Gaussian Catrom
-                     Triangle Quadratic Mitchell))
-    (:flatten "flatten a sequence of images" boolean)
-    (:fuzz "colors within this distance are considered equal" distance)
-    (:interlace "type of image interlacing scheme"
-                (choice none line plane partition JPEG GIF PNG))
-    (:interpolate "pixel color interpolation method"
-                  (choice integer nearest-neighbor average
-                          bilinear mesh bicubic spline filter ))
-    (:quality "JPEG/MIFF/PNG compression level" value)
-    (:sampling-factor "horizontal and vertical sampling factor" geometry)
-    (:statistic	"replace each pixel with corresponding statistic from the neighborhood"
-                (choice Gradient Maximum Minimum Mean Median Mode Nonpeak))
-    (:texture "name of texture to tile onto the image background" filename)
-    (:tile-offset "tile offset" geometry)
+    ("Text Settings"
+     (:encoding "text encoding type"
+		(choice AdobeCustom AdobeExpert AdobeStandard
+			AppleRoman BIG5 GB2312 "Latin 2"
+			None SJIScode Symbol Unicode Wansung))
+     (:family "render text with this font family" name)
+     (:font "render text with this font" name)
+     (:gravity "horizontal and vertical text placement"
+	       (choice NorthWest North NorthEast West
+		       Center East SouthWest South SouthEast))
+     (:pointsize "font point size" value)
+     (:stretch "render text with this font stretch"
+	       (choice Any Condensed Expanded ExtraCondensed
+		       ExtraExpanded Normal SemiCondensed
+		       SemiExpanded UltraCondensed UltraExpanded))
+     (:style "render text with this font style"
+	     (choice Any Italic Normal Oblique))
+     (:stroke "graphic primitive stroke color" color)
+     (:strokewidth "graphic primitive stroke width" value)
+     (:weight "render text with this font weight"
+	      (choice Undefined PixelsPerInch PixelsPerCentimeter)))
 
-    (:-- "Text Settings")
-    (:encoding "text encoding type"
-               (choice AdobeCustom AdobeExpert AdobeStandard
-		       AppleRoman BIG5 GB2312 "Latin 2"
-		       None SJIScode Symbol Unicode Wansung))
-    (:family "render text with this font family" name)
-    (:font "render text with this font" name)
-    (:gravity "horizontal and vertical text placement"
-              (choice NorthWest North NorthEast West
-    		      Center East SouthWest South SouthEast))
-    (:pointsize "font point size" value)
-    (:stretch "render text with this font stretch"
-              (choice Any Condensed Expanded ExtraCondensed
-                      ExtraExpanded Normal SemiCondensed
-                      SemiExpanded UltraCondensed UltraExpanded))
-    (:style "render text with this font style"
-            (choice Any Italic Normal Oblique))
-    (:stroke "graphic primitive stroke color" color)
-    (:strokewidth "graphic primitive stroke width" value)
-    (:weight "render text with this font weight"
-             (choice Undefined PixelsPerInch PixelsPerCentimeter))
+    ("Annotation"
+     (:annotate "annotate the image with text" geometry-text ) ;; fixme
+     (:draw "annotate the image with a graphic primitive" string))
 
-    (:-- "Annotation")
-    (:annotate 	"annotate the image with text" geometry-text ) ;;??
-    (:draw "annotate the image with a graphic primitive" string)
+    ("Geometry"
+     (:adaptive-resize "adaptively resize image with data dependent triangulation" geometry)
+     (:chop "remove pixels from the image interior" geometry)
+     (:border "surround image with a border of color :bordercolor" geometry)
+     (:extent "set the image size" geometry)
+     (:extract "extract area from image" geometry)
+     (:flip "flip image vertically" boolean)
+     (:flop "flop image horizontally" boolean)
+     (:resize "resize the image" geometry)
+     (:roll "roll an image vertically or horizontally" geometry)
+     (:rotate "apply Paeth rotation to the image" degrees)
+     (:scale "scale the image" scale)
+     (:shave "shave pixels from the image edges" geometry)
+     (:shear "slide one edge of the image along the X or Y axis" geometry)
+     (:thumbnail "create a thumbnail (aka fast resize)" geometry)
+     (:transpose "flip vertically and rotate 90 degrees" boolean)
+     (:transverse "flop horizontally and rotate 270 degrees" boolean)
+     (:trim "trim edges" boolean))
 
-    (:-- "Geometry")
-    (:adaptive-resize "adaptively resize image with data dependent triangulation" geometry)
-    (:chop "remove pixels from the image interior" geometry)
-    (:border "surround image with a border of color :bordercolor" geometry)
-    (:extent "set the image size" geometry)
-    (:extract "extract area from image" geometry)
-    (:flip "flip image vertically" boolean)
-    (:flop "flop image horizontally" boolean)
-    (:resize "resize the image" geometry)
-    (:roll "roll an image vertically or horizontally" geometry)
-    (:rotate "apply Paeth rotation to the image" degrees)
-    (:scale "scale the image" scale)
-    (:shave "shave pixels from the image edges" geometry)
-    (:shear "slide one edge of the image along the X or Y axis" geometry)
-    (:thumbnail "create a thumbnail (aka fast resize)" geometry)
-    (:transpose "flip vertically and rotate 90 degrees" boolean)
-    (:transverse "flop horizontally and rotate 270 degrees" boolean)
-    (:trim "trim edges" boolean)
-
-    (:-- "Effects")
-    (:adaptive-blur "adaptively blur pixels, decrease effect near edges" geometry)
-    (:adaptive-sharpen "adaptively sharpen pixels, increase effect near edges" geometry)
-    (:black-threshold "force all pixels below the threshold into black" value)
-    (:blur "reduce image noise and reduce detail levels" geometry)
-    (:charcoal "simulate a charcoal drawing" radius)
-    (:colorize "colorize the image with the :fill color" value)
-    (:contrast "enhance the image contrast" boolean)
-    (:+contrast "reduce the image contrast" boolean)
-    (:contrast-stretch "improve contrast by `stretching the intensity range" geometry)
-    (:cycle "cycle the image colormap" amount)
-    (:despeckle "reduce the speckles within an image" boolean)
-    (:edge "apply a filter to detect edges in the image" radius)
-    (:emboss "emboss an image" radius)
-    (:enhance "apply a digital filter to enhance a noisy image" boolean)
-    (:equalize "perform histogram equalization to an image" boolean)
-    (:gamma "level of gamma correction" value)
-    (:gaussian-blur "reduce image noise and reduce detail levels" geometry)
-    (:implode "implode image pixels about the center" amount)
-    (:lat "local adaptive thresholding" geometry)
-    (:level "adjust the level of image contrast" value)
-    (:linear-stretch "improve contrast by `stretching with saturation the intensity range" geometry)
-    (:median "apply a median filter to the image" geometry)
-    (:mode "make each pixel the predominant color of the neighborhood" geometry)
-    (:modulate "vary the brightness, saturation, and hue" value)
-    (:monochrome "transform image to black and white" boolean)
-    (:motion-blur "simulate motion blur" geometry)
-    (:negate "replace each pixel with its complementary color" boolean)
-    (:noise "reduce noise in an image" radius)
-    (:+noise "add noise to an image"
-	     (choice Gaussian Impulse Laplacian Multiplicative Poisson Random Uniform))
-    (:normalize "transform image to span the full range of colors" boolean)
-    (:opaque "change this color to the :fill color" color)
-    (:paint "simulate an oil painting" radius)
-    (:polaroid "simulate a Polaroid picture" angle)
-    (:+polaroid "Polaroid picture with random rotation angle between -15 and 15 degrees" boolean)
-    (:posterize "reduce the image to a limited number of color levels" levels)
-    (:radial-blur "radial blur the image" angle)
-    (:raise "darken image edges to create a 3-D effect" value)
-    (:+raise "lighten image edges to create a 3-D effect" value)
-    (:resample "change the resolution of an image" geometry)
-    (:sample "scale image with pixel sampling" geometry)
-    (:selective-blur "selectively blur pixels within a contrast threshold" geometry)
-    (:sepia-tone "simulate a sepia-toned photo" threshold)
-    (:shade "shade the image using a distant light source" degrees)
-    (:shadow "simulate an image shadow" geometry)
-    (:sharpen "sharpen the image" geometry)
-    (:sigmoidal-contrast "lightness rescaling using sigmoidal contrast enhancement" geometry)
-    (:sketch "simulate a pencil sketch" geometry)
-    (:solarize "negate all pixels above the threshold level" threshold)
-    (:splice "splice the background color into the image" geometry)
-    (:swirl "swirl image pixels about the center" degrees)
-    (:threshold "simultaneous black/white threshold" value)
-    (:tile "tile image when filling a graphic primitive" filename)
-    (:tint "tint the image with the :fill color" value)
-    (:transparent "make this color transparent" color)
-    (:unsharp "un-sharpen the image" geometry)
-    (:vignette "soften the edges of the image in vignette style" geometry)
-    (:wave "alter an image along a sine wave" geometry)
-    (:white-threshold "force all pixels above the threshold into white" value)
-   )
+    ("Effects"
+     (:adaptive-blur "adaptively blur pixels, decrease effect near edges" geometry)
+     (:adaptive-sharpen "adaptively sharpen pixels, increase effect near edges" geometry)
+     (:black-threshold "force all pixels below the threshold into black" value)
+     (:blur "reduce image noise and reduce detail levels" geometry)
+     (:charcoal "simulate a charcoal drawing" radius)
+     (:colorize "colorize the image with the :fill color" value)
+     (:contrast- "reduce the image contrast" boolean)
+     (:contrast+ "enhance the image contrast" boolean)
+     (:contrast-stretch "improve contrast by `stretching the intensity range" geometry)
+     (:cycle "cycle the image colormap" amount)
+     (:despeckle "reduce the speckles within an image" boolean)
+     (:edge "apply a filter to detect edges in the image" radius)
+     (:emboss "emboss an image" radius)
+     (:enhance "apply a digital filter to enhance a noisy image" boolean)
+     (:equalize "perform histogram equalization to an image" boolean)
+     (:gamma "level of gamma correction" value)
+     (:gaussian-blur "reduce image noise and reduce detail levels" geometry)
+     (:implode "implode image pixels about the center" amount)
+     (:lat "local adaptive thresholding" geometry)
+     (:level "adjust the level of image contrast" value)
+     (:linear-stretch "improve contrast by `stretching with saturation the intensity range" geometry)
+     (:median "apply a median filter to the image" geometry)
+     (:mode "make each pixel the predominant color of the neighborhood" geometry)
+     (:modulate "vary the brightness, saturation, and hue" value)
+     (:monochrome "transform image to black and white" boolean)
+     (:motion-blur "simulate motion blur" geometry)
+     (:negate "replace each pixel with its complementary color" boolean)
+     (:noise- "reduce noise in an image" radius)
+     (:noise+ "add noise to an image"
+	      (choice Gaussian Impulse Laplacian Multiplicative Poisson Random Uniform))
+     (:normalize "transform image to span the full range of colors" boolean)
+     (:opaque "change this color to the :fill color" color)
+     (:paint "simulate an oil painting" radius)
+     (:polaroid "simulate a Polaroid picture" angle)
+     (:+polaroid "Polaroid picture with random rotation angle between -15 and 15 degrees" boolean)
+     (:posterize "reduce the image to a limited number of color levels" levels)
+     (:radial-blur "radial blur the image" angle)
+     (:raise "darken image edges to create a 3-D effect" value)
+     (:+raise "lighten image edges to create a 3-D effect" value)
+     (:resample "change the resolution of an image" geometry)
+     (:sample "scale image with pixel sampling" geometry)
+     (:selective-blur "selectively blur pixels within a contrast threshold" geometry)
+     (:sepia-tone "simulate a sepia-toned photo" threshold)
+     (:shade "shade the image using a distant light source" degrees)
+     (:shadow "simulate an image shadow" geometry)
+     (:sharpen "sharpen the image" geometry)
+     (:sigmoidal-contrast "lightness rescaling using sigmoidal contrast enhancement" geometry)
+     (:sketch "simulate a pencil sketch" geometry)
+     (:solarize "negate all pixels above the threshold level" threshold)
+     (:splice "splice the background color into the image" geometry)
+     (:swirl "swirl image pixels about the center" degrees)
+     (:threshold "simultaneous black/white threshold" value)
+     (:tile "tile image when filling a graphic primitive" filename)
+     (:tint "tint the image with the :fill color" value)
+     (:transparent "make this color transparent" color)
+     (:unsharp "un-sharpen the image" geometry)
+     (:vignette "soften the edges of the image in vignette style" geometry)
+     (:wave "alter an image along a sine wave" geometry)
+     (:white-threshold "force all pixels above the threshold into white" value)
+     ))
   "Alist of supported features by \"convert\" backend.
-Each element is a list of the form (FEATURE DOC READ-TYPE)
+Each element is a list of the form (FEATURE DOC READ-TYPE). See
+`image-transform-backends' for a complete description.
 
-See `image-transform-backends' for a full description.
+Most of the arguments are passed to 'convert' program directly,
+but some are reprocessed to overcome various limitations of the
+convert command line tool. For example :contrast+ and :contrast-
+are transformed into -contrast and +contrast respectively,
+':caption' meta data is inserted as -set caption. See the code of
+`image-tr--preprocess-convert-arg' for all pre-processing steps.
 
-http://www.imagemagick.org/Usage/transform
-http://www.imagemagick.org/script/command-line-processing.php")
+Use `image-transform-describe-convert-option' for online
+documentation of a specific option, or visit:
+
+   http://www.imagemagick.org/Usage/transform
+   http://www.imagemagick.org/script/command-line-processing.php")
+
+(defun image-tr--preprocess-convert-arg (arg &optional name-only)
+  "Make ARG compatible with with convert specification.
+For most args this means replacing leading ':' with '-'. If
+optional NAME-ONLY is non-nil, don't perform complex
+transformation of arguments (like :caption -> -set caption)."
+  (cond ((and
+	  (not name-only)
+	  (member arg '(":caption" ":comment" ":label")))
+	 (list "-set" (substring arg 1)))
+	((equal arg ":contrast-") '("+contrast"))
+	((equal arg ":contrast+") '("-contrast"))
+	((equal arg ":noise-") '("-noise"))
+	((equal arg ":noise+") '("+noise"))
+	((string-match-p "^:\\+" arg)
+	 (list (substring arg 1)))
+	(t (list (concat "-" (substring arg 1))))))
 
 (defun image-tr--convert-args (&optional image concat)
   "Build from IMAGE a list of arguments suitable for `call-process'.
@@ -924,25 +965,16 @@ If CONCAT is non-nil, also concatenate arguments and return a
 string instead of a list."
   (setq image (or image (image-at-point)))
   (let* ((transforms (cdr (image-get image :transforms)))
-         args)
-    (cl-flet ((preproc (opt)
-		       (if (member opt '(":caption" ":comment" ":label"))
-			   (list "-set" (substring opt 1))
-			 (list (concat (if (string-match-p "^:\\+" opt) "" "-")
-				       (substring opt 1))))))  
-      (setq args
-	    (append
-	     (cl-loop for s on transforms by 'cddr
-		      append
-		      (let ((type (nth 2 (assoc (car s) image-transform-features:convert)))
-			    (opt (symbol-name (car s))))
-			(append (preproc opt)
-				(list (unless (eq 'boolean type)
-					;; could be symbol, number etc
-					(format "%s" (cadr s)))))))
-	     '("-"))))
-    
-    (setq args (delq nil args))
+         (args
+	  (delq nil 
+		(cl-loop for s on transforms by 'cddr
+			 append
+			 (let ((type (nth 2 (image-tr--get-feature
+					     (car s) image-transform-features:convert)))
+			       (opt (symbol-name (car s))))
+			   (append (image-tr--preprocess-convert-arg opt)
+				   (list (unless (eq 'boolean type)
+					   (format "%s" (cadr s))))))))))
     (if concat
         (mapconcat 'identity args " ")
       args)))
@@ -966,10 +998,7 @@ from a file can be handled by this backend."
 			    (list "Image is not associated with a file"))))
          (type (plist-get specs :type))
          (log-file (make-temp-file "image-transform.log")) ; debug only
-         (args (image-tr--convert-args image))
-	 ;; ;; complex arguments (+30x40 "Label Name") must be split
-	 ;; (args (mapcan #'split-string-and-unquote args))
-	 )
+         (args (append (image-tr--convert-args image) '("-"))))
 
     (when (or (eq type 'imagemagick)
               (null type))
@@ -1027,42 +1056,57 @@ this backend."
 (defun image-transform-describe-convert-option (&optional option)
   "Display an online documentation of \"convert\" OPTION."
   (interactive)
-  (let* ((opts (delete "--"
-                       (mapcar (lambda (x)
-                                 (substring (symbol-name (car x)) 1))
-                               image-transform-features:convert)))
-         (O (or option
-		(completing-read "Convert option: " (append '("*ALL*") opts)
-				 nil t nil 'image-tr--describe-hist))))
-    (browse-url (if (equal O "*ALL*")
+  (let* ((opts (mapcar (lambda (x)
+			 (substring (symbol-name x) 1))
+		       (image-tr--available-features 'convert)))
+         (opt (or option
+		  (completing-read "Convert option: " (append '("*ALL*") opts)
+				   nil t nil 'image-tr--describe-hist))))
+    (browse-url (if (equal opt "*ALL*")
                     "http://www.imagemagick.org/script/convert.php"
-                  (format "http://www.imagemagick.org/script/command-line-options.php#%s" O)))))
+                  (format "http://www.imagemagick.org/script/command-line-options.php#%s"
+			  (substring (car (image-tr--preprocess-convert-arg (concat ":" opt) t)) 1))))))
 
+
+;;; Transform submenus
+
+(defun image-tr--transforms-menu (menu &optional backend)
+  "Generate a submenu of transforms for BACKEND."
+  (if backend
+      (mapcar (lambda (features)
+		(append (list (car features))
+		      (mapcar (lambda (el)
+				`[,(symbol-name (car el))
+				  (lambda () (interactive) (image-add-transform nil ,(car el)))
+				  :help ,(cadr el)])
+			      (cdr features))))
+	      (symbol-value (intern (format "image-transform-features:%s" backend))))
+    (mapcar (lambda (bknd)
+	      `(,(format "%s..." (capitalize (symbol-name bknd)))
+		,@(image-tr--transforms-menu menu bknd)))
+	    image-transform-backends)))
+
+(image-tr--transforms-menu nil 'native)
 
 
 ;;; Transform UI
 
 (defvar image-tr--add-transform-hist nil)
 
-;;;###autoload
-(defun image-add-transform (&optional image)
+(defun image-add-transform (&optional image transform)
   "Interactively add transform to IMAGE.
-IMAGE defaults to `image-at-point'.  Don't use this function in
-programs, use `image-transform' instead."
+IMAGE defaults to `image-at-point'.  TRANSFORM is a keyword
+naming the transformation. Don't use this function in programs,
+use `image-transform' instead."
   (interactive)
-  (let* ((allopts (delete ":--"
-                          (cl-mapcan
-			   (lambda (b)
-			     (let ((b (intern (format "image-transform-features:%s" b))))
-			       (mapcar (lambda (x)
-					 (let ((x (symbol-name (car x))))
-					   (propertize x 'backend b)))
-				       (symbol-value b))))
-			   image-transform-backends)))
-         (tr (completing-read "Transform: " allopts nil t nil 'image-tr--add-transform-hist))
+  (let* ((allopts (delete-dups (cl-mapcan #'image-tr--available-features image-transform-backends)))
+         (tr (if transform
+		 (symbol-name transform)
+	       (completing-read "Transform: " allopts nil t nil 'image-tr--add-transform-hist)))
          (tr-symb (intern tr))
-         (type (nth 2 (assoc tr-symb
-                             (symbol-value (get-text-property 1 'backend tr)))))
+         (type (nth 2 (cl-loop for bknd in image-transform-backends
+			       for val = (image-tr--get-feature tr-symb bknd)
+			       if val return val)))
          (prompt (format "%s: " tr))
          (value (pcase type
                   (`boolean t)
@@ -1072,14 +1116,12 @@ programs, use `image-transform' instead."
                   (_ (read-string prompt)))))
     (image-transform-interactive image tr-symb value)))
 
-;;;###autoload
 (defun image-list-transforms (&optional image)
   "Print all transforms associated with IMAGE.
 IMAGE defaults to `image-at-point'."
   (interactive)
   (message "%s" (cdr (image-get-transforms image))))
 
-;;;###autoload
 (defun image-delete-transform (&optional image transform)
   "Remove from IMAGE the TRANSFORM.
 IMAGE defaults to `image-at-point'.  Don't use this function in
