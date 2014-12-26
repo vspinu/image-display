@@ -49,6 +49,17 @@
       ;; 		     (cons 74 81)))
       )))
 
+(ert-deftest test-image-transform-resize-box ()
+  (let ((img butterfly))
+    (should (equal (image-size (image-transform (copy-list img) :resize 'fit-height
+						:box (cons 100 200))
+			       t)
+		   (cons 182 200)))
+    (should (equal (image-size (image-transform (copy-list img) :resize 'fit
+						:box (cons 100 200))
+			       t)
+		   (cons 100 110)))))
+
 (ert-deftest test-image-transform-resize:convert ()
   (let ((image-transform-backends '(convert))
 	(img butterfly))
