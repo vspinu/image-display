@@ -518,7 +518,7 @@ Return a transformed NEWSPECS list."
                (symbolp resize))
       (let* ((rotate (cadr (memq :rotate newspecs)))
              (orot (image-get image :rotation))
-             (win (or (cadr (memq :window newspecs))
+             (box (or (cadr (memq :box newspecs))
                       (selected-window)))
              ;; Note: `image-size' looks up and thus caches the
              ;; untransformed image. There's no easy way to prevent
@@ -537,11 +537,13 @@ Return a transformed NEWSPECS list."
           (error "Invalid :resize argument"))
         
         (plist-put newspecs :resize
-                   (let* ((wedges (window-inside-pixel-edges win))
-                          (wsize (cons (- (nth 2 wedges)
-                                          (nth 0 wedges))
-                                       (- (nth 3 wedges)
-                                          (nth 1 wedges))))
+                   (let* ((wsize (if (windowp box)
+				     (let ((wedges (window-inside-pixel-edges box)))
+				       (cons (- (nth 2 wedges)
+						(nth 0 wedges))
+					     (- (nth 3 wedges)
+						(nth 1 wedges))))
+				   box))
                           (resize (if (and (eq resize 'fit-if-large)
                                            (or (> (car newsize) (car wsize))
                                                (> (cdr newsize) (cdr wsize))))
@@ -573,7 +575,7 @@ Return a transformed NEWSPECS list."
                        (let ((res (image-tr--get-rotated-size
                                    (cdr size) (car size) (cdr wsize) newrot)))
                          (list (unless (car res) (cdr res)) (car res))))))))))
-  newspecs)
+  (image-tr--delete-properties newspecs '(:box)))
 
 
 
@@ -582,6 +584,8 @@ Return a transformed NEWSPECS list."
 ;;;###autoload
 (defun image-transform (image &rest specs)
   "Transform IMAGE by applying transformation SPECS.
+IMAGE can be a list of images, in which case SPECS are applied to
+all the images in turn.
 
 Transformation backends listed in `image-transform-backends' are
 tried in turn and the first suitable backend is applied.  If none
@@ -618,17 +622,19 @@ being dispatched to the backend functions:
    - a number, giving new width of the image
    - a cons, giving the size (w x h) in pixels.
    - a symbol:
-     *`fit' - maximally scale IMAGE to fit into WIN.
-     *`fit-height' - fit the image to WIN's height.
-     *`fit-width' - fit the image to WIN's width.
+     *`fit' - maximally scale IMAGE to fit into window
+     *`fit-height' - fit the image to window's height
+     *`fit-width' - fit the image to window's width
      *`fit-stretch' - stretch the image to fit to both height and
-      width of WIN.
+      width of the window
+ 
+  :box - surrounding box specification used when :resize is a
+  symbol.  Can be a window or a cons cell of the form (W . H)
+  specifying the size of the surrounding box. Defaults to the
+  selected window.
 
   :save-to - a file to save the transformed image to (not
   implemented yet)
- 
-  :window - a window to be used when :resize is a
-  symbol.  Defaults to the selected window.
 
 Examples:
 
@@ -645,34 +651,40 @@ Examples:
 
   (image-transform img :background \"pink\")
   (image-transform img :background \"pink\" :flatten t :backend 'convert)"
+  (cond
+   ;; image
+   ((and (listp image) (eq (car image) 'image))
+    (let* ((force-backend (plist-get specs :backend))
+	   (backends (if (null force-backend)
+			 (copy-sequence image-transform-backends)
+		       (setq specs (image-tr--delete-properties specs '(:backend)))
+		       (list force-backend)))
+	   (bknd-errors "")
+	   out bknd bknd-specs)
 
-  (let* ((force-backend (plist-get specs :backend))
-         (backends (if (null force-backend)
-                       (copy-sequence image-transform-backends)
-                     (setq specs (image-tr--delete-properties specs '(:backend)))
-                     (list force-backend)))
-         (bknd-errors "")
-         out bknd bknd-specs)
-
-    (image-tr--osize image) ;; side effect of caching :osize
-    ;; adjust for 'fit 'fit-width etc
-    (setq specs (image-tr--adjust-specs-for-fit image specs))
-    
-    (while (and (null out)
-                (setq bknd (pop backends)))
+      (image-tr--osize image) ;; side effect of caching :osize
+      ;; adjust for 'fit 'fit-width etc
+      (setq specs (image-tr--adjust-specs-for-fit image specs))
       
-      (let ((bknd-fun (intern (concat "image-transform:"
-                                  (symbol-name bknd)))))
-        (condition-case data
-	    (progn 
-	      (image-tr--check-unsupported-features image specs bknd)
-	      (setq out (apply bknd-fun image (cl-copy-list specs))))
-          (next-backend
-           (setq bknd-errors (format "%s\n%s: %s"
-                                 bknd-errors bknd (cadr data)))))))
-    (unless out
-      (error "All backends failed with the following errors: %s" bknd-errors))
-    out))
+      (while (and (null out)
+		  (setq bknd (pop backends)))
+	
+	(let ((bknd-fun (intern (concat "image-transform:"
+					(symbol-name bknd)))))
+	  (condition-case data
+	      (progn 
+		(image-tr--check-unsupported-features image specs bknd)
+		(setq out (apply bknd-fun image (cl-copy-list specs))))
+	    (next-backend
+	     (setq bknd-errors (format "%s\n%s: %s"
+				       bknd-errors bknd (cadr data)))))))
+      (unless out
+	(error "All backends failed with the following errors: %s" bknd-errors))
+      out))
+   ;; list of images
+   ((listp image)
+    (dolist (i image) (apply #'image-transform i specs)))
+   (t (error "Invalid image object"))))
 
 (defun image-transform-interactive (&optional image &rest specs)
   "Like `image-transform' but also refresh window display.
