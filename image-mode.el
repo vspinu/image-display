@@ -141,13 +141,17 @@ deleted window."
   (setcdr winprops (cons (cons prop val)
                          (delq (assq prop (cdr winprops)) (cdr winprops)))))
 
-(defun image-set-window-vscroll (vscroll)
+(defun image-mode-set-window-vscroll (vscroll)
   (setf (image-mode-window-get 'vscroll) vscroll)
   (set-window-vscroll (selected-window) vscroll))
 
-(defun image-set-window-hscroll (ncol)
+(define-obsolete-function-alias 'image-set-window-vscroll 'image-mode-set-window-vscroll "25.1")
+
+(defun image-mode-set-window-hscroll (ncol)
   (setf (image-mode-window-get 'hscroll) ncol)
   (set-window-hscroll (selected-window) ncol))
+
+(define-obsolete-function-alias 'image-set-window-hscroll 'image-mode-set-window-hscroll "25.1")
 
 (defun image-mode-reapply-winprops ()
   ;; When set-window-buffer, set hscroll and vscroll to what they were
@@ -258,13 +262,13 @@ Stop if the right edge of the image is reached."
   (interactive "p")
   (cond ((= n 0) nil)
 	((< n 0)
-	 (image-set-window-hscroll (max 0 (+ (window-hscroll) n))))
+	 (image-mode-set-window-hscroll (max 0 (+ (window-hscroll) n))))
 	(t
 	 (let* ((image (image-at-point))
 		(edges (window-inside-edges))
 		(win-width (- (nth 2 edges) (nth 0 edges)))
 		(img-width (ceiling (car (image-display-size image)))))
-	   (image-set-window-hscroll (min (max 0 (- img-width win-width))
+	   (image-mode-set-window-hscroll (min (max 0 (- img-width win-width))
 					  (+ n (window-hscroll))))))))
 
 (define-obsolete-function-alias 'image-forward-hscroll 'image-mode-forward-hscroll "25.1")
@@ -283,13 +287,13 @@ Stop if the bottom edge of the image is reached."
   (interactive "p")
   (cond ((= n 0) nil)
 	((< n 0)
-	 (image-set-window-vscroll (max 0 (+ (window-vscroll) n))))
+	 (image-mode-set-window-vscroll (max 0 (+ (window-vscroll) n))))
 	(t
 	 (let* ((image (image-at-point))
 		(edges (window-inside-edges))
 		(win-height (- (nth 3 edges) (nth 1 edges)))
 		(img-height (ceiling (cdr (image-display-size image)))))
-	   (image-set-window-vscroll (min (max 0 (- img-height win-height))
+	   (image-mode-set-window-vscroll (min (max 0 (- img-height win-height))
 					  (+ n (window-vscroll))))))))
 
 (define-obsolete-function-alias 'image-next-line 'image-mode-next-line)
@@ -356,7 +360,7 @@ stopping if the top or bottom edge of the image is reached."
   (and arg
        (/= (setq arg (prefix-numeric-value arg)) 1)
        (image-mode-next-line (- arg 1)))
-  (image-set-window-hscroll 0))
+  (image-mode-set-window-hscroll 0))
 
 (define-obsolete-function-alias 'image-bol 'image-mode-bol)
 
@@ -372,15 +376,15 @@ stopping if the top or bottom edge of the image is reached."
 	 (edges (window-inside-edges))
 	 (win-width (- (nth 2 edges) (nth 0 edges)))
 	 (img-width (ceiling (car (image-display-size image)))))
-    (image-set-window-hscroll (max 0 (- img-width win-width)))))
+    (image-mode-set-window-hscroll (max 0 (- img-width win-width)))))
 
 (define-obsolete-function-alias 'image-eol 'image-mode-eol)
 
 (defun image-mode-bob ()
   "Scroll to the top-left corner of the image in the current window."
   (interactive)
-  (image-set-window-hscroll 0)
-  (image-set-window-vscroll 0))
+  (image-mode-set-window-hscroll 0)
+  (image-mode-set-window-vscroll 0))
 
 (define-obsolete-function-alias 'image-bob 'image-mode-bob)
 
@@ -393,8 +397,8 @@ stopping if the top or bottom edge of the image is reached."
 	 (img-width (ceiling (car (image-display-size image))))
 	 (win-height (- (nth 3 edges) (nth 1 edges)))
 	 (img-height (ceiling (cdr (image-display-size image)))))
-    (image-set-window-hscroll (max 0 (- img-width win-width)))
-    (image-set-window-vscroll (max 0 (- img-height win-height)))))
+    (image-mode-set-window-hscroll (max 0 (- img-width win-width)))
+    (image-mode-set-window-vscroll (max 0 (- img-height win-height)))))
 
 (define-obsolete-function-alias 'image-eob 'image-mode-eob)
 
