@@ -543,7 +543,9 @@ Return a transformed NEWSPECS list."
 						(nth 0 wedges))
 					     (- (nth 3 wedges)
 						(nth 1 wedges))))
-				   box))
+				   (if (listp (cdr box))
+				       (cons (car box) (cadr box))
+				     box)))
                           (resize (if (and (eq resize 'fit-if-large)
                                            (or (> (car newsize) (car wsize))
                                                (> (cdr newsize) (cdr wsize))))
@@ -629,7 +631,7 @@ being dispatched to the backend functions:
       width of the window
  
   :box - surrounding box specification used when :resize is a
-  symbol.  Can be a window or a cons cell of the form (W . H)
+  symbol.  Can be a window, cons cell (W . H) or a list (W H)
   specifying the size of the surrounding box. Defaults to the
   selected window.
 
