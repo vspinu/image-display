@@ -67,7 +67,7 @@ list values are as the VALUE argument of `image-transform-spec:geometry'."
   :group 'image-display
   :version "25.1")
 
-(defcustom image-display-default-page-geom 4
+(defcustom image-display-default-layout 4
   "Default geometry of the image-display page.
 Can be a number or a cons of the form (rows . cols). A number
 represents a total number of images per page. In this case the
@@ -158,7 +158,7 @@ and height of the current window."
   "Sequence of characters that start a multi image portion of the buffer.")
 (defvar image-display-page-end-delimiter "^IEND"
   "Sequence of characters that end a multi image portion of the buffer.")
-(defvar-local image-display-page-size nil)
+(defvar-local image-display-current-layout nil)
 (defvar-local image-display-current-geom nil)
 
 (defun image-display-page-start (&optional pos)
@@ -177,36 +177,36 @@ and height of the current window."
 	     (match-beginning 0))
 	(point-max))))
 
-(defun image-display--compute-page-size (geom)
-  "Return a list of the form (R C W H) from GEOM.
+(defun image-display--geometry (layout)
+  "Return a list of the form (R C W H) from LAYOUT.
 R and C are the number of rows and columns. W and H are the width
-and height in pixels of the box to fit each image in. GEOM is as
-in `image-display-default-page-geom'."
+and height in pixels of the box to fit each image in. LAYOUT is
+as in `image-display-default-layout'."
   (let* ((wedges (window-inside-pixel-edges))
 	 (wh (- (nth 3 wedges) (nth 1 wedges) (frame-char-height)))
 	 (ww (- (nth 2 wedges) (nth 0 wedges) (frame-char-width)))
-	 (geom (cond ((consp geom)
-		      (unless (and (numberp (car geom)) (numberp (cdr geom)))
-			(error "Rows and columns in page size specification must be numbers"))
-		      (when (or (< (car geom) 0) (< (cdr geom) 1))
-			(error "Rows and columns in page geom specification must be positive."))
-		      geom)
-		     ((numberp geom)
+	 (layout (cond ((consp layout)
+		      (unless (and (numberp (car layout)) (numberp (cdr layout)))
+			(error "Rows and columns in layout specification must be numbers"))
+		      (when (or (< (car layout) 0) (< (cdr layout) 1))
+			(error "Rows and columns in layout specification must be positive."))
+		      layout)
+		     ((numberp layout)
 		      ;; compute cols and rows such that each image box is
 		      ;; approximately square
-		      (let ((cols (round (sqrt (/ (* ww geom) (float wh))))))
-			(cons (ceiling (/ (float geom) cols))
+		      (let ((cols (round (sqrt (/ (* ww layout) (float wh))))))
+			(cons (ceiling (/ (float layout) cols))
 			      cols))))))
-    (let* ((w (- (/ ww (car geom)) (frame-char-width)))
-	   (h (- (/ wh (cdr geom)) (frame-char-height)))
-	   (N (* (car geom) (cdr geom))))
-      (list (car geom) (cdr geom) w h))))
-;; (image-display--compute-page-size 6)
+    (let* ((w (- (/ ww (car layout)) (frame-char-width)))
+	   (h (- (/ wh (cdr layout)) (frame-char-height)))
+	   (N (* (car layout) (cdr layout))))
+      (list (car layout) (cdr layout) w h))))
+;; (image-display--geometry 6)
 
 (defun image-display-previous-page ()
   ;; fixme: Nth previous page
   (interactive)
-  (let ((index (image-display-get-index (image-display-page-start)))
+  (let ((index (image-display-get index))
 	(col (get-text-property (point) :id-col)))
     (image-display-insert-page nil (1- (car index)) t)
     (image-display-goto-row-col nil col)))
@@ -227,12 +227,12 @@ in `image-display-default-page-geom'."
 	 (page-end (image-display-page-end page-start))
 	 (ring  (or ring (image-display-get-ring page-start)))
 	 (rlen (ring-length ring))
-	 (psize (or (get-text-property page-start :image-display-page-size)
-		    image-display-page-size
-		    image-display-default-page-geom))
-	 (geom (image-display--compute-page-size psize))
+	 (layout (or (get-text-property page-start :id-current-layout)
+		     image-display-current-layout
+		     image-display-default-layout))
+	 (geom (image-display--geometry layout))
 	 (N (* (car geom) (cadr geom)))
-	 (index (or index (image-display-get-index page-start)))
+	 (index (or index (image-display-get index page-start)))
 	 (interval (cond
 		    ((numberp index)
 		     (image-display--compute-index-interval index rlen N))
@@ -244,7 +244,7 @@ in `image-display-default-page-geom'."
 	 (N (min N (1+ (- index-end index-start)))))
 
     (setq image-display-current-geom geom)
-    (image-display-put-index (cons index-start index-end) page-start)
+    (image-display-put index (cons index-start index-end) page-start)
 
     ;; debug
     (switch-to-buffer (current-buffer))
@@ -332,16 +332,22 @@ in `image-display-default-page-geom'."
       image-display-ring
       (error "No image ring found")))
 
-(defun image-display-get-index (&optional page-start)
-  (or (get-text-property (or page-start (image-display-page-start))
-			 :image-display-ring-index)
-      image-display-ring-index
-      (error "No image ring index found")))
+(defmacro image-display-get (name &optional page-start) 
+  `(let ((kwd (intern (concat ":id-" ',name)))
+	 (obj (intern (concat "image-display-" ',name))))
+     (or (get-text-property (or ,page-start (image-display-page-start))
+			    kwd)
+	obj
+	(error "No image ring index found"))))
 
-(defun image-display-put-index (index &optional page-start)
-  (if (and page-start (get-text-property page-start :image-display-ring-index))
-      (put-text-property page-start (1+ page-start) index)
-    (setq image-display-ring-index index)))
+(defmacro image-display-put (name val &optional page-start)
+  `(let ((kwd (intern (concat ":id-" ',name)))
+	 (sym (intern (concat "image-display-" ',name)))
+	 (pstart (or ,page-start (image-display-page-start)))
+	 (val ,val))
+     (if (and page-start (get-text-property pstart kwd))
+	 (put-text-property page-start (1+ page-start) kwd val)
+       (set sym val))))
 
 (defun image-display--compute-index-interval (index rlen N)
   ;; always compute index such that (mod index-start rlen) = 0 and INDEX is in
@@ -402,15 +408,32 @@ in `image-display-default-page-geom'."
     map)
   "Mode keymap for `image-mode'.")
 
-(defun image-display-set-layout (spec)
-  (interactive)
-  ;; :todo
-  )
+(defvar image-display--layout-history nil)
+
+(defun image-display--read-layout (&optional prompt)
+  (let ((str (completing-read (or prompt "Layout: ")
+			      (delete-duplicates image-display--layout-history) nil nil nil
+			      'image-display--layout-history
+			      (cadr image-display--layout-history))))
+    (if (string-match "^ *\\([0-9]+\\)\\(?:[ ,.]+\\([0-9]+\\)\\)? *$" str)
+	(let ((n1 (match-string 1 str))
+	      (n2 (match-string 2 str)))
+	  (if n2
+	      (cons (string-to-number n1) (string-to-number n2))
+	    (string-to-number n1)))
+      (setq image-display--layout-history (cdr image-display--layout-history))
+      (image-display--read-layout "Wrong input. Please enter a number or a pair of numbers: "))))
+      
+
+(defun image-display-set-layout (&optional layout)
+  (interactive "N")
+  (setq image-display-current-layout
+	(or layout (image-display--read-layout)))
+  (image-display-refresh))
 
 (defun image-display-refresh ()
   (interactive)
-  ;; :todo
-  )
+  (image-display-insert-page))
 
 (defun image-display-as-text ()
   (interactive)
@@ -426,7 +449,6 @@ in `image-display-default-page-geom'."
 	      (insert data)
 	      (normal-mode))
 	  (insert-file-contents (image-get img :file) t nil nil t))))))
-
 
 (defvar archive-superior-buffer)
 (defvar tar-superior-buffer)
