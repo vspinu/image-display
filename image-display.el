@@ -33,6 +33,11 @@
   "Support for displaying multiple image files."
   :group 'multimedia)
 
+(defcustom image-display-show-cursor t
+  "Non-nil if the cursor should be shown in `image-display-mode'."
+  :group 'image-display
+  :type 'boolean)
+
 (defcustom image-display-auto-resize 'fit
   "Image auto-resize default.
 
@@ -62,7 +67,7 @@ list values are as the VALUE argument of `image-transform-spec:geometry'."
   :group 'image-display
   :version "25.1")
 
-(defcustom image-display-default-page-geom 3
+(defcustom image-display-default-page-geom 4
   "Default geometry of the image-display page.
 Can be a number or a cons of the form (rows . cols). A number
 represents a total number of images per page. In this case the
@@ -109,12 +114,14 @@ and height of the current window."
   (cond
    ((memq this-command image-display-up-comands)
     ;; first row
-    (when (= (get-text-property (point) :id-row) 1)
-      (setq this-command 'image-display-previous-page)))
+    (let ((row (get-text-property (point) :id-row)))
+      (when (and row (= row 1))
+	(setq this-command 'image-display-previous-page))))
    ((memq this-command image-display-down-comands)
     ;; last row
     (when (or (= (point) (point-max))
-	      (save-excursion (forward-line 1) (= (point) (point-max))))
+	      (save-excursion (forward-line 1)
+			      (= (point) (point-max))))
       (setq this-command 'image-display-next-page)))
    ((memq this-command image-display-scroll-up-comands)
     (setq this-command 'image-display-next-page))
@@ -126,6 +133,22 @@ and height of the current window."
     (let ((inhibit-point-motion-hooks t)
 	  (span (image-display--get-image-span new)))
       (move-overlay image-display--cursor-overlay (car span) (cdr span)))))
+
+(defvar-local image-display--last-point nil)
+(defun image-display--post-command-handler ()
+  (when (not (eq image-display--last-point (point)))
+    (setq image-display--last-point (point))
+    (when image-display--cursor-overlay
+      (let ((inhibit-point-motion-hooks t)
+	    (span (image-display--get-image-span (point))))
+	(move-overlay image-display--cursor-overlay (car span) (cdr span))))
+    (let ((image (image-at-point)))
+      (when image
+	(let ((file (or (image-get image :file)
+			(image-get image :type))))
+	  (rename-buffer (format "*ID[%s]*" (file-name-nondirectory file)) t ))))
+    ;; todo: set a meaningful mode-line-position
+    ))
 
 
 
@@ -209,31 +232,23 @@ in `image-display-default-page-geom'."
 		    image-display-default-page-geom))
 	 (geom (image-display--compute-page-size psize))
 	 (N (* (car geom) (cadr geom)))
-	 (int (or index (image-display-get-index page-start)))
-	 (int (cond ((numberp int)
-		     (image-display--compute-index-interval int rlen N))
-		    ((consp int) int)
+	 (index (or index (image-display-get-index page-start)))
+	 (interval (cond
+		    ((numberp index)
+		     (image-display--compute-index-interval index rlen N))
+		    ((consp index) index)
 		    (t (error "Index must be a number or cons of numbers"))))
-	 (index-start (car int))
-	 (index-end (cdr int))
+	 (index-start (car interval))
+	 (index-end (cdr interval))
 	 ;; number of images actually inserted
 	 (N (min N (1+ (- index-end index-start)))))
 
     (setq image-display-current-geom geom)
     (image-display-put-index (cons index-start index-end) page-start)
-    
-    ;; (let ((buffer-file-truename nil)) ; avoid changing dir mtime by lock_file
-    ;;   (add-text-properties (point-min) (point-max) props)
-    ;;   (restore-buffer-modified-p modified))
-    ;; ;; Discard any stale image data before looking it up again.
-    ;; (image-flush image)
-    ;; (image-transform-interactive image :resize image-display-auto-resize)
-    ;; Disable adding a newline at the end of the image file when it
-    ;; is written with, e.g., C-x C-w.
-    ;; (if (coding-system-equal (coding-system-base buffer-file-coding-system)
-    ;; 			   'no-conversion)
-    ;;     (setq-local find-file-literally t))
+
+    ;; debug
     (switch-to-buffer (current-buffer))
+
     (with-silent-modifications
       (goto-char page-start)
       (delete-region page-start page-end)
@@ -255,7 +270,8 @@ in `image-display-default-page-geom'."
 						:color ,(face-attribute 'default :background))))
 		      (str (propertize name 'intangible i 'field i  'face face
 				       :id-ix ix :id-col col :id-row row
-				       'point-entered #'image-display--point-entered-handler)))
+				       ;; 'point-entered #'image-display--point-entered-handler
+				       )))
 		 (insert-image img str nil nil t)
 		 (if (= col (cadr geom))
 		     (insert (propertize "\n" 'intangible i))
@@ -265,7 +281,9 @@ in `image-display-default-page-geom'."
 		   (put-text-property
 		    ;; todo: report bug. At point-max (forward-line -1) infloops here.
 		    (save-excursion (goto-char (1- (point))) (point-at-bol)) (point) :id-last-row t)))))
-    (goto-char page-start)))
+    (if (numberp index)
+	(image-display-goto-image index)
+      (goto-char page-start))))
 
 
 
@@ -367,59 +385,51 @@ in `image-display-default-page-geom'."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     ;; (define-key map "\C-c\C-c" 'image-display-toggle)
-    (define-key map (kbd "SPC")       'image-mode-scroll-up)
-    (define-key map (kbd "S-SPC")     'image-mode-scroll-down)
-    (define-key map (kbd "DEL")       'image-mode-scroll-down) (define-key map (kbd "RET")       'image-toggle-animation)
-    (define-key map "n" 'image-mode-next-file)
-    (define-key map "p" 'image-mode-previous-file)
-    ;; (define-key map [remap forward-char] 'image-mode-forward-hscroll)
-    ;; (define-key map [remap backward-char] 'image-mode-backward-hscroll)
-    ;; (define-key map [remap left-char] 'left-mode-forward-hscroll)
-    ;; (define-key map [remap left-char] 'image-mode-backward- -key left [remap previous-line] 'image-mode-previous-line)
-    ;; (define-key map [remap next-line] 'image-mode-next-line)
-    ;; (define-key map [remap scroll-up] 'image-mode-scroll-up)
-    ;; (define-key map [remap scroll-down] 'image-mode-scroll-down)
-    ;; (define-key map [remap scroll-up-command] 'image-mode-scroll-up)
-    ;; (define-key map [remap scroll-down-command] 'image-mode-scroll-down)
-    ;; (define-key map [remap move-beginning-of-line] 'image-mode-bol)
-    ;; (define-key map [remap move-end-of-line] 'image-mode-eol)
-    ;; (define-key map [remap beginning-of-buffer] 'image-mode-bob)
-    ;; (define-key map [remap end-of-buffer] 'image-mode-eob)
-    (easy-menu-define image-mode-menu map "Menu for Image mode."
+    (define-key map (kbd "SPC")       'image-display-next-page)
+    (define-key map (kbd "S-SPC")     'image-display-previous-page)
+    (define-key map (kbd "DEL")       'image-display-previous-page)
+    (kdefine-key map "n" 'next-line)
+    (define-key map "p" 'previous-line)
+    (define-key map "f" 'forward-char)
+    (define-key map "b" 'backward-char)
+    (define-key map "l" 'image-display-set-layout)
+    (define-key map "g" 'image-display-refres)
+    (define-key map "\C-c\C-c" 'image-display-as-text)
+    (easy-menu-define image-mode-menu map "Menu for Image Display mode."
       '("Image"
-	;; ["Show as Text" image-mode-toggle-display :active t
-	;;  :help "Show image as text"]
-	;; "--"
-	["Show Thumbnails" image-mode-show-thumbnails :active default-directory
-	 :help "Show thumbnails for all images in this directory"]
-	["Next Image" image-mode-next-file :active buffer-file-name
-         :help "Move to next image in this directory"]
-	["Previous Image" image-mode-previous-file :active buffer-file-name
-         :help "Move to previous image in this directory"]
-	))
+	["Show as Text" image-display-as-text :active t
+	 :help "Show image at point as text"]))
     map)
   "Mode keymap for `image-mode'.")
 
-(defvar image-display-mode-line-process
-  '(:eval
-    (let* ((image (image-at-point))
-	   (animated (image-multi-frame-p image)))
-      (concat " "
-	      (when animated
-		(propertize
-		 (format "[%s/%s]"
-			 (1+ (image-current-frame image))
-			 (car animated))
-		 'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
-		 'mouse-face 'mode-line-highlight
-		 'local-map '(keymap
-			      (mode-line keymap
-					 (down-mouse-1 . image-next-frame)
-					 (down-mouse-3 . image-previous-frame)))))))))
+(defun image-display-set-layout (spec)
+  (interactive)
+  ;; :todo
+  )
+
+(defun image-display-refresh ()
+  (interactive)
+  ;; :todo
+  )
+
+(defun image-display-as-text ()
+  (interactive)
+  (let ((img (image-at-point)))
+    (if (null img)
+	(error "No image at point")
+      (let ((image-text-mode-auto-display nil)
+	    (inhibit-read-only t)
+	    (data (image-get img :data)))
+	(if data
+	    (progn
+	      (erase-buffer)
+	      (insert data)
+	      (normal-mode))
+	  (insert-file-contents (image-get img :file) t nil nil t))))))
+
 
 (defvar archive-superior-buffer)
 (defvar tar-superior-buffer)
-
 (declare-function image-flush "image.c" (spec &optional frame))
 
 ;;;###autoload
@@ -449,62 +459,66 @@ in `image-display-default-page-geom'."
   (image-mode-setup-winprops)
 
   (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
+  (add-hook 'post-command-hook 'image-display--post-command-handler nil t)
 
   (setq line-spacing image-display-line-spacing)
-  
-  (let ((image (image-at-point))
-	(msg1 (substitute-command-keys
-	       "Type \\[todo:] to view the image as ")))
-    (cond
-     ((null image)
-      (message "%s" (concat msg1 "an image.")))
-     ((image-multi-frame-p image) 
-      (message "%s" (concat msg1 "text.  This image has multiple frames.")))
-     (t (message "%s" (concat msg1 "text.")))))
-  
-  (add-hook 'change-major-mode-hook
-	    (lambda ()
-	      ;; todo:remove display property
-	      )
-	    nil t))
 
+  (setq mode-line-process )
+  
+  ;; todo:remove display properties
+  (add-hook 'change-major-mode-hook (lambda ()) nil t))
+
+(defvar image-display-mode-line-process
+  '(:eval
+    (let* ((image (image-at-point))
+	   (animated (image-multi-frame-p image)))
+      (concat " "
+	      (when animated
+		(propertize
+		 (format "[%s/%s]"
+			 (1+ (image-current-frame image))
+			 (car animated))
+		 'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
+		 'mouse-face 'mode-line-highlight
+		 'local-map '(keymap
+			      (mode-line keymap
+					 (down-mouse-1 . image-next-frame)
+					 (down-mouse-3 . image-previous-frame)))))))))
 
 
-;;; IMAGE MODE
+;;; OTHER STUFF
 
-(defcustom image-mode-show-cursor t
-  "Non-nil if the cursor should be shown in `image-mode'."
-  :group 'image-mode
-  :type 'boolean)
-
-(defcustom image-mode-auto-display t
+(defcustom image-text-mode-auto-display t
   "If non-nil, `image-mode' automatically displays images on initialization."
   :group 'image
   :type 'boolean
   :version "25.1")
 
-(defvar image-mode-map
+(defvar image-text-mode-map
   (let ((map (make-sparse-keymap)))
-    ;; todo
-    ;; (define-key map "\C-c\C-c" 'image-mode-display-image)
+    (define-key map "\C-c\C-c" 'image-text-mode-display)
     map)
   "Mode keymap for `image-mode'.")
 
-;;;###autoload
-(define-derived-mode image-mode fundamental-mode "Image Mode" 
+(define-derived-mode image-text-mode fundamental-mode "Image Mode" 
   "Major mode for editing image files.
 Key bindings:
 \\{image-mode-map}"
-  (image-mode--init-ring)
-  (when image-mode-auto-display
+  (image-text-mode--init-ring)
+  (when image-text-mode-auto-display
     (image-display-mode)))
+(defalias 'image-mode 'image-text-mode)
+
+(defun image-text-mode-display ()
+  (interactive)
+  (image-display-mode))
 
 (defun ring-set (ring index item)
   (let* ((vec (cddr ring))
 	 (ix (ring-index index (car ring) (cadr ring) (length vec))))
     (aset vec ix item)))
 
-(defun image-mode--init-ring ()
+(defun image-text-mode--init-ring ()
   (let* ((file (buffer-file-name))
 	 (dir (file-name-directory file))
 	 (files (directory-files dir t (image-file-name-regexp) t))
@@ -529,5 +543,50 @@ Key bindings:
 		 (string-make-unibyte
 		  (buffer-substring-no-properties (point-min) (point-max)))
 		 nil 'data)))))
+
+(defun insert-image2 (image &optional string area slice map)
+  "Insert IMAGE into current buffer at point.
+IMAGE is displayed by inserting STRING into the current buffer
+with a `display' property whose value is the image.  STRING
+defaults to a single space if you omit it.
+AREA is where to display the image.  AREA nil or omitted means
+display it in the text area, a value of `left-margin' means
+display it in the left marginal area, a value of `right-margin'
+means display it in the right marginal area.
+SLICE specifies slice of IMAGE to insert.  SLICE nil or omitted
+means insert whole image.  SLICE is a list (X Y WIDTH HEIGHT)
+specifying the X and Y positions and WIDTH and HEIGHT of image area
+to insert.  A float value 0.0 - 1.0 means relative to the width or
+height of the image; integer values are taken as pixel values.
+If MAP is provided, it must be a keymap what will be used as
+text property keymap. A special value of t means to use
+`image-manipulation-map'"
+  ;; Use a space as least likely to cause trouble when it's a hidden
+  ;; character in the buffer.
+  (unless string (setq string " "))
+  (unless (eq (car-safe image) 'image)
+    (error "Not an image: %s" image))
+  (unless (or (null area) (memq area '(left-margin right-margin)))
+    (error "Invalid area %s" area))
+  (if area
+      (setq image (list (list 'margin area) image))
+    ;; Cons up a new spec equal but not eq to `image' so that
+    ;; inserting it twice in a row (adjacently) displays two copies of
+    ;; the image.  Don't try to avoid this by looking at the display
+    ;; properties on either side so that we DTRT more often with
+    ;; cut-and-paste.  (Yanking killed image text next to another copy
+    ;; of it loses anyway.)
+    (setq image (cons 'image (cdr image))))
+  (when (eq map t)
+    (setq map image-manipulation-map))
+  (let ((start (point)))
+    (insert string)
+    (add-text-properties start (point)
+			 `(display ,(if slice
+					(list (cons 'slice slice) image)
+				      image)
+                                   rear-nonsticky (display)
+                                   keymap ,map))))
+(defalias 'insert-image 'insert-image2)
 
 (provide 'image-display)

@@ -1098,9 +1098,9 @@ defaults to `image-at-point'."
 
 (defvar image-manipulation-map
   (let ((map (make-sparse-keymap)))
-    (define-key map "F" 'image-goto-frame)
-    (define-key map "f" 'image-next-frame)
-    (define-key map "b" 'image-previous-frame)
+    ;; (define-key map "F" 'image-goto-frame)
+    ;; (define-key map "f" 'image-next-frame)
+    ;; (define-key map "b" 'image-previous-frame)
     (define-key map "a+" 'image-increase-speed)
     (define-key map "a-" 'image-decrease-speed)
     (define-key map "a0" 'image-reset-speed)
