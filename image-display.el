@@ -213,7 +213,7 @@ as in `image-display-default-layout'."
 
 (defun image-display-next-page ()
   (interactive)
-  (let ((index (image-display-get-index (image-display-page-start)))
+  (let ((index (image-display-get index (image-display-page-start)))
 	(col (get-text-property (point) :id-col)))
     (image-display-insert-page nil (1+ (cdr index)))
     (image-display-goto-row-col 1 col)))
@@ -309,7 +309,7 @@ as in `image-display-default-layout'."
 (defun image-display-goto-image (ix)
   (let* ((page-start (image-display-page-start))
 	 (ix (mod ix (ring-length (image-display-get-ring page-start))))
-	 (index (image-display-get-index page-start)))
+	 (index (image-display-get index page-start)))
     (unless (and (>= ix (car index))
 		 (<= ix (cdr index)))
       (image-display-insert-page nil ix))
@@ -323,31 +323,14 @@ as in `image-display-default-layout'."
   "Ring of images in the current buffer.")
 (put 'image-display-ring 'permanent-local t)
 
-(defvar-local image-display-ring-index nil
+(defvar-local image-display-index nil
   "Ring of images in the current buffer.")
-(put 'image-display-ring-index 'permanent-local t)
+(put 'image-display-index 'permanent-local t)
 
 (defun image-display-get-ring (&optional page-start)
   (or (get-text-property page-start :image-display-ring)
       image-display-ring
       (error "No image ring found")))
-
-(defmacro image-display-get (name &optional page-start) 
-  `(let ((kwd (intern (concat ":id-" ',name)))
-	 (obj (intern (concat "image-display-" ',name))))
-     (or (get-text-property (or ,page-start (image-display-page-start))
-			    kwd)
-	obj
-	(error "No image ring index found"))))
-
-(defmacro image-display-put (name val &optional page-start)
-  `(let ((kwd (intern (concat ":id-" ',name)))
-	 (sym (intern (concat "image-display-" ',name)))
-	 (pstart (or ,page-start (image-display-page-start)))
-	 (val ,val))
-     (if (and page-start (get-text-property pstart kwd))
-	 (put-text-property page-start (1+ page-start) kwd val)
-       (set sym val))))
 
 (defun image-display--compute-index-interval (index rlen N)
   ;; always compute index such that (mod index-start rlen) = 0 and INDEX is in
@@ -356,6 +339,24 @@ as in `image-display-default-layout'."
 	 (index-start (* (/ index N) N))
 	 (index-end (min (1- rlen) (1- (+ index-start N)))))
     (cons index-start index-end)))
+
+(defmacro image-display-get (name &optional page-start)
+  (declare (debug (symbolp form)))
+  (let ((kwd (intern (format ":id-%s" name)))
+	(obj (intern (format "image-display-%s" name))))
+    `(or (get-text-property (or ,page-start (image-display-page-start))
+			    ,kwd)
+	 ,obj
+	 (error (format "No image display %s found" ,name)))))
+
+(defmacro image-display-put (name val &optional page-start)
+  (declare (debug (symbolp form)))
+  (let ((kwd (intern (format ":id-%s" name)))
+	(sym (intern (format "image-display-%s" name)))
+	(pstart (or page-start (image-display-page-start))))
+    `(if (and ,pstart (get-text-property ,pstart ,kwd))
+	 (put-text-property page-start (1+ ,pstart) ,kwd ,val)
+       (set ',sym ,val))))
 
 
 ;;; UTILS
@@ -394,7 +395,7 @@ as in `image-display-default-layout'."
     (define-key map (kbd "SPC")       'image-display-next-page)
     (define-key map (kbd "S-SPC")     'image-display-previous-page)
     (define-key map (kbd "DEL")       'image-display-previous-page)
-    (kdefine-key map "n" 'next-line)
+    (define-key map "n" 'next-line)
     (define-key map "p" 'previous-line)
     (define-key map "f" 'forward-char)
     (define-key map "b" 'backward-char)
@@ -483,8 +484,6 @@ as in `image-display-default-layout'."
   (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
   (add-hook 'post-command-hook 'image-display--post-command-handler nil t)
 
-  (setq line-spacing image-display-line-spacing)
-
   (setq mode-line-process )
   
   ;; todo:remove display properties
@@ -558,9 +557,9 @@ Key bindings:
       (push file files))
     (setq files (sort files 'string-lessp)
 	  image-display-ring (ring-convert-sequence-to-ring files)
-	  image-display-ring-index (ring-member image-display-ring file))
+	  image-display-index (ring-member image-display-ring file))
     (when data-p
-      (ring-set image-display-ring image-display-ring-index
+      (ring-set image-display-ring image-display-index
 		(create-image
 		 (string-make-unibyte
 		  (buffer-substring-no-properties (point-min) (point-max)))
