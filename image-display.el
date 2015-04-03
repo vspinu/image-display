@@ -99,10 +99,6 @@ and height of the current window."
 (defcustom image-display-scroll-down-comands '(scrool-down scroll-down-command)
   "List of down scrolling commands.")
 
-(defcustom image-display-cursor-color "gray30"
-  "Color of the current image border and background `image-display-mode'."
-  :group 'image-display)
-
 (defcustom image-display-border-width (/ (frame-char-height) 2)
   "Border around images in `image-display-mode' buffers."
   :group 'image-display)
@@ -128,15 +124,16 @@ and height of the current window."
    ((memq this-command image-display-scroll-down-comands)
     (setq this-command 'image-display-previous-page))))
 
-(defun image-display--point-entered-handler (old new)
-  (when image-display--cursor-overlay
-    (let ((inhibit-point-motion-hooks t)
-	  (span (image-display--get-image-span new)))
-      (move-overlay image-display--cursor-overlay (car span) (cdr span)))))
-
 (defvar-local image-display--last-point nil)
-(defun image-display--post-command-handler ()
-  (when (not (eq image-display--last-point (point)))
+(defun image-display--post-command-handler (&optional force)
+  (when (or force
+	    (not (eq image-display--last-point (point))))
+    ;; move away from extreme points
+    (cond ((eq (point) (point-max))
+	   (backward-char))
+	  ((and (eq (point) (point-min))
+		(eq 0 (get-text-property (point) 'intangible)))
+	   (forward-char)))
     (setq image-display--last-point (point))
     (when image-display--cursor-overlay
       (let ((inhibit-point-motion-hooks t)
@@ -159,7 +156,7 @@ and height of the current window."
 (defvar image-display-page-end-delimiter "^IEND"
   "Sequence of characters that end a multi image portion of the buffer.")
 (defvar-local image-display-current-layout nil)
-(defvar-local image-display-current-geom nil)
+(defvar-local image-display-current-geometry nil)
 
 (defun image-display-page-start (&optional pos)
   "Return the page start position preceding POS or point-min if not found."
@@ -177,7 +174,7 @@ and height of the current window."
 	     (match-beginning 0))
 	(point-max))))
 
-(defun image-display--geometry (layout)
+(defun image-display--compute-geometry (layout)
   "Return a list of the form (R C W H) from LAYOUT.
 R and C are the number of rows and columns. W and H are the width
 and height in pixels of the box to fit each image in. LAYOUT is
@@ -197,11 +194,11 @@ as in `image-display-default-layout'."
 		      (let ((cols (round (sqrt (/ (* ww layout) (float wh))))))
 			(cons (ceiling (/ (float layout) cols))
 			      cols))))))
-    (let* ((w (- (/ ww (car layout)) (frame-char-width)))
-	   (h (- (/ wh (cdr layout)) (frame-char-height)))
+    (let* ((h (- (/ wh (car layout)) (frame-char-width)))
+	   (w (- (/ ww (cdr layout)) (frame-char-height)))
 	   (N (* (car layout) (cdr layout))))
       (list (car layout) (cdr layout) w h))))
-;; (image-display--geometry 6)
+;; (image-display--compute-geometry 6)
 
 (defun image-display-previous-page ()
   ;; fixme: Nth previous page
@@ -225,12 +222,12 @@ as in `image-display-default-layout'."
 	 (buffer-undo-list t)
 	 (page-start (image-display-page-start))
 	 (page-end (image-display-page-end page-start))
-	 (ring  (or ring (image-display-get-ring page-start)))
+	 (ring  (or ring (image-display-get ring page-start)))
 	 (rlen (ring-length ring))
 	 (layout (or (get-text-property page-start :id-current-layout)
 		     image-display-current-layout
 		     image-display-default-layout))
-	 (geom (image-display--geometry layout))
+	 (geom (image-display--compute-geometry layout))
 	 (N (* (car geom) (cadr geom)))
 	 (index (or index (image-display-get index page-start)))
 	 (interval (cond
@@ -243,7 +240,7 @@ as in `image-display-default-layout'."
 	 ;; number of images actually inserted
 	 (N (min N (1+ (- index-end index-start)))))
 
-    (setq image-display-current-geom geom)
+    (setq image-display-current-geometry geom)
     (image-display-put index (cons index-start index-end) page-start)
 
     ;; debug
@@ -261,26 +258,30 @@ as in `image-display-default-layout'."
 		      (img (image-transform img
 					    :resize image-display-auto-resize
 					    :box (cddr geom)))
+		      (size (image-size img t))
+		      (side-px (/ (- (nth 2 geom) (car size)) 2.0))
+		      (px-left (max 0 (floor side-px)))
+		      (px-right (max 0 (ceiling side-px)))
 		      (col (1+ (mod (1- i) (cadr geom))))
 		      (row (1+ (/ (1- i) (car geom))))
 		      (name (concat (or (image-get img :file)
 					(number-to-string i))
 				    " "))
-		      (face `(:box (:line-width ,image-display-border-width
-						:color ,(face-attribute 'default :background))))
-		      (str (propertize name 'intangible i 'field i  'face face
-				       :id-ix ix :id-col col :id-row row
-				       ;; 'point-entered #'image-display--point-entered-handler
-				       )))
-		 (insert-image img str nil nil t)
-		 (if (= col (cadr geom))
+		      (face `(:box (:line-width ,image-display-border-width :color ,(face-attribute 'default :background))))
+		      (common-props `(face ,face :id-ix ,ix :id-col ,col :id-row ,row)))
+
+		 (when (> px-left 0)
+		   (insert (apply #'propertize " " 'intangible (1- i)
+				  'display `(space :width (,px-left))
+				  common-props)))
+		 (insert-image img (apply #'propertize name :id i 'intangible i common-props) nil nil t)
+		 (when (> px-right 0)
+		   (insert (apply #'propertize " " 'intangible i 'display `(space :width (,px-right)) common-props)))
+		 
+		 (if (and (= col (cadr geom)))
 		     (insert (propertize "\n" 'intangible i))
 		   ;; emacs doesn't display horizontal border correctly, this is an awkward fix
-		   (insert (propertize " " 'intangible i 'field i 'face face)))
-		 (when (= ix index-end)
-		   (put-text-property
-		    ;; todo: report bug. At point-max (forward-line -1) infloops here.
-		    (save-excursion (goto-char (1- (point))) (point-at-bol)) (point) :id-last-row t)))))
+		   (insert (propertize " " 'intangible i 'face face))))))
     (if (numberp index)
 	(image-display-goto-image index)
       (goto-char page-start))))
@@ -308,12 +309,13 @@ as in `image-display-default-layout'."
 
 (defun image-display-goto-image (ix)
   (let* ((page-start (image-display-page-start))
-	 (ix (mod ix (ring-length (image-display-get-ring page-start))))
+	 (ix (mod ix (ring-length (image-display-get ring page-start))))
 	 (index (image-display-get index page-start)))
     (unless (and (>= ix (car index))
 		 (<= ix (cdr index)))
       (image-display-insert-page nil ix))
-    (goto-char (image-display--next-property-equal page-start :id-ix ix))))
+    (goto-char (image-display--next-property-equal page-start :id-ix ix))
+    (image-display--post-command-handler t)))
 
 
 
@@ -326,11 +328,6 @@ as in `image-display-default-layout'."
 (defvar-local image-display-index nil
   "Ring of images in the current buffer.")
 (put 'image-display-index 'permanent-local t)
-
-(defun image-display-get-ring (&optional page-start)
-  (or (get-text-property page-start :image-display-ring)
-      image-display-ring
-      (error "No image ring found")))
 
 (defun image-display--compute-index-interval (index rlen N)
   ;; always compute index such that (mod index-start rlen) = 0 and INDEX is in
@@ -350,7 +347,7 @@ as in `image-display-default-layout'."
 	 (error (format "No image display %s found" ,name)))))
 
 (defmacro image-display-put (name val &optional page-start)
-  (declare (debug (symbolp form)))
+  (declare (debug (symbolp form form)))
   (let ((kwd (intern (format ":id-%s" name)))
 	(sym (intern (format "image-display-%s" name)))
 	(pstart (or page-start (image-display-page-start))))
@@ -382,7 +379,9 @@ as in `image-display-default-layout'."
 (defun image-display--get-image-span (&optional pos)
   (let ((inhibit-point-motion-hooks t)
 	(pos (or pos (point))))
-    (cons pos (next-single-property-change pos 'field nil (point-max)))))
+    (cons
+     (previous-single-property-change pos :id-ix nil (point-at-bol))
+     (next-single-property-change pos :id-ix nil (point-at-eol)))))
 
 
 
@@ -400,7 +399,7 @@ as in `image-display-default-layout'."
     (define-key map "f" 'forward-char)
     (define-key map "b" 'backward-char)
     (define-key map "l" 'image-display-set-layout)
-    (define-key map "g" 'image-display-refres)
+    (define-key map "g" 'image-display-refresh)
     (define-key map "\C-c\C-c" 'image-display-as-text)
     (easy-menu-define image-mode-menu map "Menu for Image Display mode."
       '("Image"
@@ -427,14 +426,21 @@ as in `image-display-default-layout'."
       
 
 (defun image-display-set-layout (&optional layout)
-  (interactive "N")
+  (interactive "P")
+  (cond ((numberp layout))
+	((listp layout) (setq layout (car layout)))
+	(t (setq layout nil)))
   (setq image-display-current-layout
 	(or layout (image-display--read-layout)))
   (image-display-refresh))
 
 (defun image-display-refresh ()
   (interactive)
-  (image-display-insert-page))
+  (let ((ix (get-text-property (point) :id-ix)))
+    ;; tothink: call imaged-display-mode instead?
+    (image-display-insert-page)
+    (when ix
+      (image-display-goto-image ix))))
 
 (defun image-display-as-text ()
   (interactive)
@@ -456,7 +462,7 @@ as in `image-display-default-layout'."
 (declare-function image-flush "image.c" (spec &optional frame))
 
 ;;;###autoload
-(define-derived-mode image-display-mode fundamental-mode "Display"
+(define-derived-mode image-display-mode special-mode "Display"
   "Mode to preview multiple images inside emacs buffer."
   :group 'image
   
@@ -464,22 +470,21 @@ as in `image-display-default-layout'."
     (error "Display does not support images"))
 
   (setq
-   ;; todo:
-   ;; mode-line-process image-display-mode-line-process
+   ;; todo: mode-line-process image-display-mode-line-process
    cursor-type 'box
    truncate-lines t)
   
-  (set-visited-file-name nil)
-
   (setq-local image-display--cursor-overlay (make-overlay 1 1))
-  (overlay-put image-display--cursor-overlay
-	       'face `(:box (:line-width ,image-display-border-width
-					 :color ,image-display-cursor-color)
-			    :background ,image-display-cursor-color))
+  (let ((bg-color (face-attribute 'highlight :background)))
+    (overlay-put image-display--cursor-overlay
+		 'face `(:box (:line-width ,image-display-border-width
+					   :color ,bg-color)
+			      :background ,bg-color)))
   
   ;; ring and index have been setup
   (image-display-insert-page)
   (image-mode-setup-winprops)
+  (read-only-mode 1)
 
   (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
   (add-hook 'post-command-hook 'image-display--post-command-handler nil t)
@@ -487,24 +492,24 @@ as in `image-display-default-layout'."
   (setq mode-line-process )
   
   ;; todo:remove display properties
-  (add-hook 'change-major-mode-hook (lambda ()) nil t))
+  (add-hook 'change-major-mode-hook (lambda ()) nil t)
 
-(defvar image-display-mode-line-process
-  '(:eval
-    (let* ((image (image-at-point))
-	   (animated (image-multi-frame-p image)))
-      (concat " "
-	      (when animated
-		(propertize
-		 (format "[%s/%s]"
-			 (1+ (image-current-frame image))
-			 (car animated))
-		 'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
-		 'mouse-face 'mode-line-highlight
-		 'local-map '(keymap
-			      (mode-line keymap
-					 (down-mouse-1 . image-next-frame)
-					 (down-mouse-3 . image-previous-frame)))))))))
+  (defvar image-display-mode-line-process
+    '(:eval
+      (let* ((image (image-at-point))
+	     (animated (image-multi-frame-p image)))
+	(concat " "
+		(when animated
+		  (propertize
+		   (format "[%s/%s]"
+			   (1+ (image-current-frame image))
+			   (car animated))
+		   'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
+		   'mouse-face 'mode-line-highlight
+		   'local-map '(keymap
+				(mode-line keymap
+					   (down-mouse-1 . image-next-frame)
+					   (down-mouse-3 . image-previous-frame))))))))))
 
 
 ;;; OTHER STUFF
@@ -525,10 +530,14 @@ as in `image-display-default-layout'."
   "Major mode for editing image files.
 Key bindings:
 \\{image-mode-map}"
-  (image-text-mode--init-ring)
-  (when image-text-mode-auto-display
-    (image-display-mode)))
+  (image-text-mode--init-ring))
 (defalias 'image-mode 'image-text-mode)
+
+(defun image-text-mode--display-maybe ()
+  (when image-text-mode-auto-display
+    (set-visited-file-name nil)
+    (image-display-mode)))
+(add-hook 'image-text-mode-hook 'image-text-mode--display-maybe)
 
 (defun image-text-mode-display ()
   (interactive)
