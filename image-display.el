@@ -26,6 +26,7 @@
 ;;; Code:
 
 (require 'image)
+(require 'image-manip)
 (require 'image-transform)
 (require 'ring)
 
