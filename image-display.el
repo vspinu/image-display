@@ -109,16 +109,9 @@ and height of the current window."
 (defun image-display--pre-command-handler ()
   (cond
    ((memq this-command image-display-up-comands)
-    ;; first row
-    (let ((row (get-text-property (point) :id-row)))
-      (when (and row (= row 1))
-	(setq this-command 'image-display-previous-page))))
+    (setq this-command 'image-display-previous-row))
    ((memq this-command image-display-down-comands)
-    ;; last row
-    (when (or (= (point) (point-max))
-	      (save-excursion (forward-line 1)
-			      (= (point) (point-max))))
-      (setq this-command 'image-display-next-page)))
+    (setq this-command 'image-display-next-row))
    ((memq this-command image-display-scroll-up-comands)
     (setq this-command 'image-display-next-page))
    ((memq this-command image-display-scroll-down-comands)
@@ -126,12 +119,14 @@ and height of the current window."
 
 (defvar-local image-display--last-point nil)
 (defun image-display--post-command-handler (&optional force)
+  ;; todo: set a meaningful mode-line-position
   (when (or force
 	    (not (eq image-display--last-point (point))))
-    ;; move away from extreme points
+    ;; move away from point-max and point-min
     (cond ((eq (point) (point-max))
 	   (backward-char))
 	  ((and (eq (point) (point-min))
+		;; only needed when there is a left margin on first image
 		(eq 0 (get-text-property (point) 'intangible)))
 	   (forward-char)))
     (setq image-display--last-point (point))
@@ -143,9 +138,7 @@ and height of the current window."
       (when image
 	(let ((file (or (image-get image :file)
 			(image-get image :type))))
-	  (rename-buffer (format "*ID[%s]*" (file-name-nondirectory file)) t ))))
-    ;; todo: set a meaningful mode-line-position
-    ))
+	  (rename-buffer (format "*ID[%s]*" (file-name-nondirectory file)) t ))))))
 
 
 
@@ -174,6 +167,24 @@ and height of the current window."
 	     (match-beginning 0))
 	(point-max))))
 
+(defun image-display--area-loss (r c N W H)
+  (let* ((side (min (/ H (float r)) (/ W (float c))))
+	 (area (* side side))
+	 (loss (+ (- (* W H) (* r c area))
+		  (* (- (* c r) N) area))))
+    loss))
+
+(defun image-display--optimal-layout (N W H)
+  (let ((min-loss 100000000)
+	(layout))
+   (cl-loop for c from 1 to N
+	    for r = (ceiling (/ (float N) c))
+	    for loss = (image-display--area-loss r c N W H)
+	    when (< loss min-loss)
+	    do (setq layout (cons r c)
+		     min-loss loss))
+   layout))
+
 (defun image-display--compute-geometry (layout)
   "Return a list of the form (R C W H) from LAYOUT.
 R and C are the number of rows and columns. W and H are the width
@@ -183,37 +194,69 @@ as in `image-display-default-layout'."
 	 (wh (- (nth 3 wedges) (nth 1 wedges) (frame-char-height)))
 	 (ww (- (nth 2 wedges) (nth 0 wedges) (frame-char-width)))
 	 (layout (cond ((consp layout)
-		      (unless (and (numberp (car layout)) (numberp (cdr layout)))
-			(error "Rows and columns in layout specification must be numbers"))
-		      (when (or (< (car layout) 0) (< (cdr layout) 1))
-			(error "Rows and columns in layout specification must be positive."))
-		      layout)
-		     ((numberp layout)
-		      ;; compute cols and rows such that each image box is
-		      ;; approximately square
-		      (let ((cols (round (sqrt (/ (* ww layout) (float wh))))))
-			(cons (ceiling (/ (float layout) cols))
-			      cols))))))
+			(unless (and (numberp (car layout)) (numberp (cdr layout)))
+			  (error "Rows and columns in layout specification must be numbers"))
+			(when (or (< (car layout) 0) (< (cdr layout) 1))
+			  (error "Rows and columns in layout specification must be positive."))
+			layout)
+		       ((numberp layout)
+			(image-display--optimal-layout layout ww wh)))))
     (let* ((h (- (/ wh (car layout)) (frame-char-width)))
 	   (w (- (/ ww (cdr layout)) (frame-char-height)))
 	   (N (* (car layout) (cdr layout))))
       (list (car layout) (cdr layout) w h))))
 ;; (image-display--compute-geometry 6)
 
-(defun image-display-previous-page ()
-  ;; fixme: Nth previous page
-  (interactive)
-  (let ((index (image-display-get index))
-	(col (get-text-property (point) :id-col)))
-    (image-display-insert-page nil (1- (car index)) t)
-    (image-display-goto-row-col nil col)))
+(defvar-local image-display--before-flip-column nil)
+(defvar-local image-display--after-flip-column nil)
 
-(defun image-display-next-page ()
+(defun image-display-next-page (&optional arg)
+  ;; fixme: implement Nth previous page
   (interactive)
-  (let ((index (image-display-get index (image-display-page-start)))
+  (let* ((index (image-display-get index))
+	 (orig-col (get-text-property (point) :id-col))
+	 (col (or (and  (eq image-display--after-flip-column orig-col)
+			image-display--before-flip-column)
+		  orig-col))
+	 (arg (or arg 1))
+	 (fwd (>= arg 0))
+	 (new-index (if fwd
+			(1+ (cdr index))
+		      (1- (car index)))))
+    (image-display-insert-page nil new-index t)
+    (image-display-goto-row-col (and fwd 1) col)
+    (let ((new-col (get-text-property (point) :id-col)))
+      (setq image-display--before-flip-column (when (< new-col col) col)
+	    image-display--after-flip-column new-col))))
+
+(defun image-display-previous-page (&optional arg)
+  (interactive)
+  (image-display-next-page (- (or arg 1))))
+
+(defun image-display-previous-row ()
+  ;; fixme: Nth row
+  (interactive)
+  (let ((row (get-text-property (point) :id-row))
 	(col (get-text-property (point) :id-col)))
-    (image-display-insert-page nil (1+ (cdr index)))
-    (image-display-goto-row-col 1 col)))
+      (cond ((and row (= row 1))
+	     (image-display-previous-page))
+	    ((and row col)
+	     (image-display-goto-row-col (1- row) col))
+	    ;; should never happen
+	    (t (previous-line)))))
+
+(defun image-display-next-row ()
+  (interactive)
+  (let ((pos-eol (point-at-eol)))
+    (if (or (= pos-eol (point-max))
+	    (= pos-eol (1- (point-max))))
+	(image-display-next-page)
+      (let ((row (get-text-property (point) :id-row))
+	    (col (get-text-property (point) :id-col)))
+	(cond ((and row col)
+	       (image-display-goto-row-col (1+ row) col))
+	      ;; should never happen
+	      (t (next-line)))))))
 
 (defun image-display-insert-page (&optional ring index backp)
   "Display images from image ring associated with the page at POS."
@@ -263,7 +306,7 @@ as in `image-display-default-layout'."
 		      (px-left (max 0 (floor side-px)))
 		      (px-right (max 0 (ceiling side-px)))
 		      (col (1+ (mod (1- i) (cadr geom))))
-		      (row (1+ (/ (1- i) (car geom))))
+		      (row (1+ (/ (1- i) (cadr geom))))
 		      (name (concat (or (image-get img :file)
 					(number-to-string i))
 				    " "))
@@ -292,20 +335,28 @@ as in `image-display-default-layout'."
 
 (defun image-display-goto-row-col (row col)
   ;; nil means last row/col
-  (goto-char (image-display-page-start))
-  (let ((row-pos (and row
-		      (image-display--next-property-equal (point) :id-row row))))
-    (if row-pos
-	(if col
-	    (goto-char (or (image-display--next-property-equal row-pos :id-col col)
-			   row-pos))
-	  (goto-char row-pos)
-	  (move-end-of-line 1))
-      (if col
-	  (goto-char (or (image-display--previous-property-equal (point-max) :id-col col)
-			 (point-min)))
-	(goto-char (point-max))
-	(goto-char (previous-single-property-change (point-max) :id-ix))))))
+  (let* ((pstart (image-display-page-start))
+	 (pend (image-display-page-end pstart)))
+
+    ;; report: This reset is needed due to emacs bug. If new point is the same
+    ;; as (point) goto-char jumps to a different position
+    (goto-char pstart)
+
+    (let ((row-pos (and row (image-display--next-property-equal pstart :id-row row))))
+      (if row-pos
+	  (let ((col-pos (and col (image-display--next-property-equal row-pos :id-col col))))
+	    (if col-pos
+		(goto-char col-pos)
+	      ;; either COL is not specified, or there are less columns in this row than COL
+	      (goto-char row-pos)
+	      (move-end-of-line 1)
+	      (backward-char 1)))
+	;; last row
+	(let ((col-pos (image-display--previous-property-equal pend :id-col col)))
+	  (if col-pos
+	      (goto-char col-pos)
+	    (goto-char pend)
+	    (backward-char 1)))))))
 
 (defun image-display-goto-image (ix)
   (let* ((page-start (image-display-page-start))
@@ -338,7 +389,7 @@ as in `image-display-default-layout'."
     (cons index-start index-end)))
 
 (defmacro image-display-get (name &optional page-start)
-  (declare (debug (symbolp form)))
+  (declare (debug (symbolp)))
   (let ((kwd (intern (format ":id-%s" name)))
 	(obj (intern (format "image-display-%s" name))))
     `(or (get-text-property (or ,page-start (image-display-page-start))
@@ -358,23 +409,29 @@ as in `image-display-default-layout'."
 
 ;;; UTILS
 
-(defun image-display--next-property-equal (pos prop val)
+(defun image-display--next-property-equal (pos prop val &optional limit)
   (if (equal val (get-text-property pos prop))
       pos
-    (let ((pc-pos pos))
-      (while (and (setq pc-pos (next-single-property-change pc-pos prop))
+    (let ((pc-pos pos)
+	  (limit (or limit (point-max))))
+      (while (and (< pc-pos limit)
+		  (setq pc-pos (next-single-property-change pc-pos prop nil limit))
 		  (not (equal val (get-text-property pc-pos prop)))))
       (when (and pc-pos
 		 (equal val (get-text-property pc-pos prop)))
 	pc-pos))))
 
-(defun image-display--previous-property-equal (pos prop val)
-  (let ((pc-pos pos))
-    (while (and (setq pc-pos (previous-single-property-change pc-pos prop))
+(defun image-display--previous-property-equal (pos prop val &optional limit)
+  (let ((pc-pos pos)
+	(limit (or limit (point-min))))
+    (while (and (> pc-pos limit)
+		(setq pc-pos (previous-single-property-change pc-pos prop nil limit))
 		(not (equal val (get-text-property pc-pos prop)))))
-    (when (and pc-pos
-	       (equal val (get-text-property pc-pos prop)))
-      pc-pos)))
+    (if (and pc-pos
+	     (equal val (get-text-property pc-pos prop)))
+	pc-pos
+      (if (equal val (get-text-property limit prop))
+	  limit))))
 
 (defun image-display--get-image-span (&optional pos)
   (let ((inhibit-point-motion-hooks t)
@@ -386,6 +443,60 @@ as in `image-display-default-layout'."
 
 
 ;;; DISPLAY MODE
+
+(defvar image-display--layout-history nil)
+
+(defun image-display--read-layout (&optional prompt)
+  (let ((str (completing-read (or prompt "Layout: ")
+			      (delete-duplicates image-display--layout-history) nil nil nil
+			      'image-display--layout-history
+			      (cadr image-display--layout-history))))
+    (if (string-match "^ *\\([0-9]+\\)\\(?:[ ,.]+\\([0-9]+\\)\\)? *$" str)
+	(let ((n1 (match-string 1 str))
+	      (n2 (match-string 2 str)))
+	  (if n2
+	      (cons (string-to-number n1) (string-to-number n2))
+	    (string-to-number n1)))
+      (setq image-display--layout-history (cdr image-display--layout-history))
+      (image-display--read-layout "Wrong input. Please enter a number or a pair of numbers: "))))
+      
+(defun image-display-set-layout (&optional layout)
+  (interactive "P")
+  (cond ((numberp layout))
+	((listp layout) (setq layout (car layout)))
+	(t (setq layout nil)))
+  (setq image-display-current-layout
+	(or layout (image-display--read-layout))
+	;; image-display--after-flip-column nil
+	;; image-display--before-flip-column nil
+	)
+  (image-display-refresh))
+
+(defun image-display-refresh ()
+  (interactive)
+  (let ((ix (get-text-property (point) :id-ix)))
+    ;; tothink: call imaged-display-mode instead?
+    (image-display-put index ix)
+    (image-display-insert-page)))
+
+(defun image-display-as-text ()
+  (interactive)
+  (let ((img (image-at-point)))
+    (if (null img)
+	(error "No image at point")
+      (let ((image-text-mode-auto-display nil)
+	    (inhibit-read-only t)
+	    (data (image-get img :data)))
+	(if data
+	    (progn
+	      (erase-buffer)
+	      (insert data)
+	      (normal-mode))
+	  (insert-file-contents (image-get img :file) t nil nil t))))))
+
+(defvar archive-superior-buffer)
+(defvar tar-superior-buffer)
+(declare-function image-flush "image.c" (spec &optional frame))
 
 (defvar image-display-mode-map
   (let ((map (make-sparse-keymap)))
@@ -407,59 +518,6 @@ as in `image-display-default-layout'."
 	 :help "Show image at point as text"]))
     map)
   "Mode keymap for `image-mode'.")
-
-(defvar image-display--layout-history nil)
-
-(defun image-display--read-layout (&optional prompt)
-  (let ((str (completing-read (or prompt "Layout: ")
-			      (delete-duplicates image-display--layout-history) nil nil nil
-			      'image-display--layout-history
-			      (cadr image-display--layout-history))))
-    (if (string-match "^ *\\([0-9]+\\)\\(?:[ ,.]+\\([0-9]+\\)\\)? *$" str)
-	(let ((n1 (match-string 1 str))
-	      (n2 (match-string 2 str)))
-	  (if n2
-	      (cons (string-to-number n1) (string-to-number n2))
-	    (string-to-number n1)))
-      (setq image-display--layout-history (cdr image-display--layout-history))
-      (image-display--read-layout "Wrong input. Please enter a number or a pair of numbers: "))))
-      
-
-(defun image-display-set-layout (&optional layout)
-  (interactive "P")
-  (cond ((numberp layout))
-	((listp layout) (setq layout (car layout)))
-	(t (setq layout nil)))
-  (setq image-display-current-layout
-	(or layout (image-display--read-layout)))
-  (image-display-refresh))
-
-(defun image-display-refresh ()
-  (interactive)
-  (let ((ix (get-text-property (point) :id-ix)))
-    ;; tothink: call imaged-display-mode instead?
-    (image-display-insert-page)
-    (when ix
-      (image-display-goto-image ix))))
-
-(defun image-display-as-text ()
-  (interactive)
-  (let ((img (image-at-point)))
-    (if (null img)
-	(error "No image at point")
-      (let ((image-text-mode-auto-display nil)
-	    (inhibit-read-only t)
-	    (data (image-get img :data)))
-	(if data
-	    (progn
-	      (erase-buffer)
-	      (insert data)
-	      (normal-mode))
-	  (insert-file-contents (image-get img :file) t nil nil t))))))
-
-(defvar archive-superior-buffer)
-(defvar tar-superior-buffer)
-(declare-function image-flush "image.c" (spec &optional frame))
 
 ;;;###autoload
 (define-derived-mode image-display-mode special-mode "Display"
@@ -483,7 +541,7 @@ as in `image-display-default-layout'."
   
   ;; ring and index have been setup
   (image-display-insert-page)
-  (image-mode-setup-winprops)
+  ;; (image-mode-setup-winprops)
   (read-only-mode 1)
 
   (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
