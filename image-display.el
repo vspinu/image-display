@@ -67,15 +67,21 @@ list values are as the VALUE argument of `image-transform-spec:geometry'."
   :group 'image-display
   :version "25.1")
 
-(defcustom image-display-default-layout 4
+(defcustom image-display-default-layouts '(1 4 9)
   "Default geometry of the image-display page.
 Can be a number or a cons of the form (rows . cols). A number
 represents a total number of images per page. In this case the
 number of rows and cols are computed sensibly based on the width
 and height of the current window."
   :group 'image-display
-  :type '(choice integer (cons integer integer)))
+  :type '(repeat
+	  (choice (integer :tag "Images per Page"
+			   :value 10)
+		  (cons :tag "Rows x Cols"
+			:value (2 . 2)
+			integer integer))))
 
+(defvar-local image-display-layouts nil)
 
 (defcustom image-display-forward-commands '(forward-char
 					    forward-list forward-sexp forward-word
@@ -120,8 +126,7 @@ and height of the current window."
 (defvar-local image-display--last-point nil)
 (defun image-display--post-command-handler (&optional force)
   ;; todo: set a meaningful mode-line-position
-  (when (or force
-	    (not (eq image-display--last-point (point))))
+  (when (or force (not (eq image-display--last-point (point))))
     ;; move away from point-max and point-min
     (cond ((eq (point) (point-max))
 	   (backward-char))
@@ -189,7 +194,7 @@ and height of the current window."
   "Return a list of the form (R C W H) from LAYOUT.
 R and C are the number of rows and columns. W and H are the width
 and height in pixels of the box to fit each image in. LAYOUT is
-as in `image-display-default-layout'."
+as in `image-display-default-layouts'."
   (let* ((wedges (window-inside-pixel-edges))
 	 (wh (- (nth 3 wedges) (nth 1 wedges) (frame-char-height)))
 	 (ww (- (nth 2 wedges) (nth 0 wedges) (frame-char-width)))
@@ -267,9 +272,9 @@ as in `image-display-default-layout'."
 	 (page-end (image-display-page-end page-start))
 	 (ring  (or ring (image-display-get ring page-start)))
 	 (rlen (ring-length ring))
-	 (layout (or (get-text-property page-start :id-current-layout)
-		     image-display-current-layout
-		     image-display-default-layout))
+	 (layout (or (image-display-get current-layout page-start)
+		     (car (image-display-get layouts page-start))
+		     (car (image-display-get default-layouts page-start))))
 	 (geom (image-display--compute-geometry layout))
 	 (N (* (car geom) (cadr geom)))
 	 (index (or index (image-display-get index page-start)))
@@ -365,6 +370,7 @@ as in `image-display-default-layout'."
     (unless (and (>= ix (car index))
 		 (<= ix (cdr index)))
       (image-display-insert-page nil ix))
+    (goto-char page-start) ; reset needed in emacs 24.4.93
     (goto-char (image-display--next-property-equal page-start :id-ix ix))
     (image-display--post-command-handler t)))
 
@@ -389,22 +395,24 @@ as in `image-display-default-layout'."
     (cons index-start index-end)))
 
 (defmacro image-display-get (name &optional page-start)
-  (declare (debug (symbolp)))
-  (let ((kwd (intern (format ":id-%s" name)))
-	(obj (intern (format "image-display-%s" name))))
+  (declare (debug (symbolp &optional form))
+	   ;; (gv-setter (lambda (val)
+	   ;; 		`(image-display-put ,name ,val ,page-start)))
+	   )
+  (let ((kwd (intern (format ":id-%s" (symbol-name name))))
+	(obj (intern (format "image-display-%s" (symbol-name name)))))
     `(or (get-text-property (or ,page-start (image-display-page-start))
 			    ,kwd)
-	 ,obj
-	 (error (format "No image display %s found" ,name)))))
+	 ,obj)))
 
 (defmacro image-display-put (name val &optional page-start)
-  (declare (debug (symbolp form form)))
-  (let ((kwd (intern (format ":id-%s" name)))
-	(sym (intern (format "image-display-%s" name)))
-	(pstart (or page-start (image-display-page-start))))
-    `(if (and ,pstart (get-text-property ,pstart ,kwd))
-	 (put-text-property page-start (1+ ,pstart) ,kwd ,val)
-       (set ',sym ,val))))
+  (declare (debug (symbolp form &optional form)))
+  (let ((kwd (intern (format ":id-%s" (symbol-name name))))
+	(sym (intern (format "image-display-%s" (symbol-name name)))))
+    `(let ((pstart (or ,page-start (image-display-page-start))))
+       (if (and pstart (get-text-property pstart ,kwd))
+	   (put-text-property page-start (1+ pstart) ,kwd ,val)
+	 (set ',sym ,val)))))
 
 
 ;;; UTILS
@@ -462,14 +470,18 @@ as in `image-display-default-layout'."
       
 (defun image-display-set-layout (&optional layout)
   (interactive "P")
-  (cond ((numberp layout))
-	((listp layout) (setq layout (car layout)))
-	(t (setq layout nil)))
-  (setq image-display-current-layout
-	(or layout (image-display--read-layout))
-	;; image-display--after-flip-column nil
-	;; image-display--before-flip-column nil
-	)
+  (when (and layout (not (numberp layout)))
+    (setq layout (image-display--read-layout)))
+  (if layout
+      (image-display-put layouts image-display-default-layouts)
+    (unless (image-display-get layouts)
+      (image-display-put layouts image-display-default-layouts))
+    (let ((layouts (image-display-get layouts)))
+      (when (eq (car layouts) (image-display-get current-layout))
+	(setq layouts (cdr layouts)))
+      (setq layout (car layouts))
+      (image-display-put layouts (cdr layouts))))
+  (image-display-put current-layout layout)
   (image-display-refresh))
 
 (defun image-display-refresh ()
@@ -513,7 +525,11 @@ as in `image-display-default-layout'."
     (define-key map "g" 'image-display-refresh)
     (define-key map "\C-c\C-c" 'image-display-as-text)
     (easy-menu-define image-mode-menu map "Menu for Image Display mode."
-      '("Image"
+      '("ImageDisplay"
+	["Set Layout" image-display-set-layout :active t
+	 :help "Cycle layout. Set with numeric prefix. Ask with C-u."]
+	["Refresh" image-display-refresh :active t
+	 :help "Refresh current display."]
 	["Show as Text" image-display-as-text :active t
 	 :help "Show image at point as text"]))
     map)
@@ -533,6 +549,8 @@ as in `image-display-default-layout'."
    truncate-lines t)
   
   (setq-local image-display--cursor-overlay (make-overlay 1 1))
+  (setq image-display-layouts image-display-default-layouts)
+  
   (let ((bg-color (face-attribute 'highlight :background)))
     (overlay-put image-display--cursor-overlay
 		 'face `(:box (:line-width ,image-display-border-width
