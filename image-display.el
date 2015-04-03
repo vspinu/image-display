@@ -524,7 +524,7 @@ as in `image-display-default-layouts'."
     (define-key map "l" 'image-display-set-layout)
     (define-key map "g" 'image-display-refresh)
     (define-key map "\C-c\C-c" 'image-display-as-text)
-    (easy-menu-define image-mode-menu map "Menu for Image Display mode."
+    (easy-menu-define image-display-menu map "Menu for Image Display mode."
       '("ImageDisplay"
 	["Set Layout" image-display-set-layout :active t
 	 :help "Cycle layout. Set with numeric prefix. Ask with C-u."]
