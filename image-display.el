@@ -388,11 +388,6 @@ as in `image-display-default-layouts'."
 (defvar-local image-display-retriever 'image-display-default-retriever)
 (put 'image-display-retriever 'permanent-local t)
 
-(defun image-display-default-retriever (name obj &rest ignored)
-  (cond ((stringp obj) (create-image obj))
-	((and (consp obj) (eq (car obj) 'image)) obj)
-	(t (error "default retriever can handle only file names and images."))))
-
 (defmacro image-display-get (name &optional page-start)
   (declare (debug (symbolp &optional form))
 	   ;; (gv-setter (lambda (val)
@@ -554,6 +549,10 @@ Like `ring-member' but compares RING element's car to NAME."
   (unless (display-images-p)
     (error "Display does not support images"))
 
+  (set-visited-file-name nil)
+  (setq buffer-auto-save-file-name nil ;; set-visited-file-name doesn't set this in emacs24
+  	change-major-mode-with-file-name nil)
+
   (setq
    ;; todo: mode-line-process image-display-mode-line-process
    cursor-type 'box
@@ -579,26 +578,32 @@ Like `ring-member' but compares RING element's car to NAME."
   ;; todo:remove display properties
   (add-hook 'change-major-mode-hook (lambda ()) nil t))
 
-(defvar image-display-mode-line-process
-  '(:eval
-    (let* ((image (image-at-point))
-	   (animated (image-multi-frame-p image)))
-      (concat " "
-	      (when animated
-		(propertize
-		 (format "[%s/%s]"
-			 (1+ (image-current-frame image))
-			 (car animated))
-		 'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
-		 'mouse-face 'mode-line-highlight
-		 'local-map '(keymap
-			      (mode-line keymap
-					 (down-mouse-1 . image-next-frame)
-					 (down-mouse-3 . image-previous-frame)))))))))
+;; (defvar image-display-mode-line-process
+;;   '(:eval
+;;     (let* ((image (image-at-point))
+;; 	   (animated (image-multi-frame-p image)))
+;;       (concat " "
+;; 	      (when animated
+;; 		(propertize
+;; 		 (format "[%s/%s]"
+;; 			 (1+ (image-current-frame image))
+;; 			 (car animated))
+;; 		 'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
+;; 		 'mouse-face 'mode-line-highlight
+;; 		 'local-map '(keymap
+;; 			      (mode-line keymap
+;; 					 (down-mouse-1 . image-next-frame)
+;; 					 (down-mouse-3 . image-previous-frame)))))))))
 
 
 ;;; RING CONSTRUCTORS
-;; todo: for tar, archive and remotes, store the image in the ring once extracted
+;; todo: for tar, archive and remotes, store the already loaded image 
+
+(defun image-display--create-image (name data)
+  (let* ((data (string-make-unibyte data))
+	 (type (or (image-type-from-data data)
+		   (image-type-from-file-name name))))
+    (create-image data type t)))
 
 (defun image-display-init-directory-ring (&optional cur-file)
   (let* ((files (directory-files default-directory t (image-file-name-regexp) t)))
@@ -621,6 +626,19 @@ Like `ring-member' but compares RING element's car to NAME."
       (when cur-file
 	(let ((name (file-name-nondirectory cur-file)))
 	  (image-display-put index (image-display-member ring name)))))))
+
+(declare-function tramp-handle-insert-file-contents "tramp" (filename &optional visit beg end replace))
+(defun image-display-default-retriever (name obj &rest ignored)
+  (cond ((stringp obj)
+	 (if (not (file-remote-p obj))
+	     (create-image obj)
+	   (require 'tramp)
+	   (with-temp-buffer
+	     (tramp-handle-insert-file-contents obj)
+	     (image-display--create-image obj (buffer-string)))))
+	((and (consp obj) (eq (car obj) 'image))
+	 obj)
+	(t (error "default retriever can handle only file names and images."))))
 
 ;; TAR
 (defvar tar-superior-buffer)
@@ -646,8 +664,7 @@ Like `ring-member' but compares RING element's car to NAME."
   (let ((buff (with-current-buffer tar-superior-buffer
 		(tar--extract descriptor))))
     (prog1 (with-current-buffer buff
-	     (create-image (string-make-unibyte (buffer-string))
-			   nil 'data))
+	     (image-display--create-image file (buffer-string)))
       (kill-buffer buff))))
 
 ;; ARCHIVE
@@ -690,8 +707,7 @@ Like `ring-member' but compares RING element's car to NAME."
 	      (funcall extractor archive name)
 	    (archive-*-extract archive name
 			       (symbol-value extractor))))
-	(create-image (string-make-unibyte (buffer-string))
-		      nil 'data)))))
+	(image-display--create-image file (buffer-string))))))
 
 
 ;;; OTHER STUFF
@@ -732,8 +748,8 @@ Key bindings:
 (defalias 'image-mode 'image-text-mode)
 
 (defun image-text-mode--display-maybe ()
-  (when image-text-mode-auto-display
-    (set-visited-file-name nil)
+  (when (and image-text-mode-auto-display
+	     (display-images-p))
     (image-display-mode)))
 (add-hook 'image-text-mode-hook 'image-text-mode--display-maybe)
 
