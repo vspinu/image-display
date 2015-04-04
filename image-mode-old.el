@@ -719,6 +719,6 @@ replacing the current Image mode buffer."
       (image-mode-toggle-display))))
 
 
-(provide 'image-mode)
+(provide 'image-mode-old)
 
 ;;; image-mode.el ends here
