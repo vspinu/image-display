@@ -140,12 +140,10 @@ and height of the current window."
       (let ((inhibit-point-motion-hooks t)
 	    (span (image-display--get-image-span (point))))
 	(move-overlay image-display--cursor-overlay (car span) (cdr span))))
-    (let ((image (image-at-point)))
-      (when image
-	(let ((file (or (image-get image :file)
-			(image-get image :type))))
-	  (rename-buffer (format "*ID[%s]*" (file-name-nondirectory file)) t ))))))
-
+    (let ((ix (get-text-property (point) :id-ix)))
+      (when ix
+	(let ((name (car (ring-ref (image-display-get ring) ix))))
+	  (rename-buffer (format "*ID[%s]*" name) t ))))))
 
 
 ;;; PAGES
@@ -287,10 +285,12 @@ as in `image-display-default-layouts'."
 	 (index-start (car interval))
 	 (index-end (cdr interval))
 	 ;; number of images actually inserted
-	 (N (min N (1+ (- index-end index-start)))))
+	 (N (min N (1+ (- index-end index-start))))
+	 (retriever (image-display-get retriever page-start)))
 
-    (setq image-display-current-geometry geom)
     (image-display-put index (cons index-start index-end) page-start)
+    (image-display-put current-geometry geom)
+    (image-display-put current-layout layout)
 
     ;; debug
     (switch-to-buffer (current-buffer))
@@ -301,9 +301,7 @@ as in `image-display-default-layouts'."
       (cl-loop for ix from index-start to index-end
 	       for i = (1+ (- ix index-start)) do
 	       (let* ((img (ring-ref ring ix))
-		      (img (if (stringp img)
-			       (create-image img)
-			     img))
+		      (img (apply retriever img))
 		      (img (image-transform img
 					    :resize image-display-auto-resize
 					    :box (cddr geom)))
@@ -387,13 +385,13 @@ as in `image-display-default-layouts'."
   "Ring of images in the current buffer.")
 (put 'image-display-index 'permanent-local t)
 
-(defun image-display--compute-index-interval (index rlen N)
-  ;; always compute index such that (mod index-start rlen) = 0 and INDEX is in
-  ;; the interval
-  (let* ((index (mod index rlen))
-	 (index-start (* (/ index N) N))
-	 (index-end (min (1- rlen) (1- (+ index-start N)))))
-    (cons index-start index-end)))
+(defvar-local image-display-retriever 'image-display-default-retriever)
+(put 'image-display-retriever 'permanent-local t)
+
+(defun image-display-default-retriever (name obj &rest ignored)
+  (cond ((stringp obj) (create-image obj))
+	((and (consp obj) (eq (car obj) 'image)) obj)
+	(t (error "default retriever can handle only file names and images."))))
 
 (defmacro image-display-get (name &optional page-start)
   (declare (debug (symbolp &optional form))
@@ -414,6 +412,22 @@ as in `image-display-default-layouts'."
        (if (and pstart (get-text-property pstart ,kwd))
 	   (put-text-property page-start (1+ pstart) ,kwd ,val)
 	 (set ',sym ,val)))))
+
+(defun image-display-member (ring name)
+  "Return index of item with name NAME from RING.
+Like `ring-member' but compares RING element's car to NAME."
+  (catch 'found
+    (dotimes (ind (ring-length ring) nil)
+      (when (equal name (car (ring-ref ring ind)))
+	(throw 'found ind)))))
+
+(defun image-display--compute-index-interval (index rlen N)
+  ;; always compute index such that (mod index-start rlen) = 0 and INDEX is in
+  ;; the interval
+  (let* ((index (mod index rlen))
+	 (index-start (* (/ index N) N))
+	 (index-end (min (1- rlen) (1- (+ index-start N)))))
+    (cons index-start index-end)))
 
 
 ;;; UTILS
@@ -507,10 +521,6 @@ as in `image-display-default-layouts'."
 	      (normal-mode))
 	  (insert-file-contents (image-get img :file) t nil nil t))))))
 
-(defvar archive-superior-buffer)
-(defvar tar-superior-buffer)
-(declare-function image-flush "image.c" (spec &optional frame))
-
 (defvar image-display-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -526,7 +536,7 @@ as in `image-display-default-layouts'."
     (define-key map "g" 'image-display-refresh)
     (define-key map "\C-c\C-c" 'image-display-as-text)
     (easy-menu-define image-display-menu map "Menu for Image Display mode."
-      '("ImageDisplay"
+      '("ImgDisplay"
 	["Set Layout" image-display-set-layout :active t
 	 :help "Cycle layout. Set with numeric prefix. Ask with C-u."]
 	["Refresh" image-display-refresh :active t
@@ -566,27 +576,122 @@ as in `image-display-default-layouts'."
   (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
   (add-hook 'post-command-hook 'image-display--post-command-handler nil t)
 
-  (setq mode-line-process )
-  
   ;; todo:remove display properties
-  (add-hook 'change-major-mode-hook (lambda ()) nil t)
+  (add-hook 'change-major-mode-hook (lambda ()) nil t))
 
-  (defvar image-display-mode-line-process
-    '(:eval
-      (let* ((image (image-at-point))
-	     (animated (image-multi-frame-p image)))
-	(concat " "
-		(when animated
-		  (propertize
-		   (format "[%s/%s]"
-			   (1+ (image-current-frame image))
-			   (car animated))
-		   'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
-		   'mouse-face 'mode-line-highlight
-		   'local-map '(keymap
-				(mode-line keymap
-					   (down-mouse-1 . image-next-frame)
-					   (down-mouse-3 . image-previous-frame))))))))))
+(defvar image-display-mode-line-process
+  '(:eval
+    (let* ((image (image-at-point))
+	   (animated (image-multi-frame-p image)))
+      (concat " "
+	      (when animated
+		(propertize
+		 (format "[%s/%s]"
+			 (1+ (image-current-frame image))
+			 (car animated))
+		 'help-echo "Frames\nmouse-1: Next frame\nmouse-3: Previous frame"
+		 'mouse-face 'mode-line-highlight
+		 'local-map '(keymap
+			      (mode-line keymap
+					 (down-mouse-1 . image-next-frame)
+					 (down-mouse-3 . image-previous-frame)))))))))
+
+
+;;; RING CONSTRUCTORS
+;; todo: for tar, archive and remotes, store the image in the ring once extracted
+
+(defun image-display-init-directory-ring (&optional cur-file)
+  (let* ((files (directory-files default-directory t (image-file-name-regexp) t)))
+    ;; Add the current file to the list of images if necessary, in
+    ;; case it does not match `image-file-name-regexp'.
+    (when cur-file
+      (unless (member cur-file files)
+	(push cur-file files)))
+    ;; todo: deal with fileless buffers somehow
+    ;; (when data-p
+    ;;   (ring-set image-display-ring image-display-index
+    ;; 		(create-image
+    ;; 		 (string-make-unibyte
+    ;; 		  (buffer-substring-no-properties (point-min) (point-max)))
+    ;; 		 nil 'data)))
+    (let* ((alist (mapcar (lambda (f) (list (file-name-nondirectory f) f))
+			  (sort files 'string-lessp)))
+	   (ring (ring-convert-sequence-to-ring alist)))
+      (image-display-put ring ring)
+      (when cur-file
+	(let ((name (file-name-nondirectory cur-file)))
+	  (image-display-put index (image-display-member ring name)))))))
+
+;; TAR
+(defvar tar-superior-buffer)
+(defvar tar-superior-descriptor)
+(declare-function tar-header-name "tar-mode" (CL-X))
+(declare-function tar--extract "tar-mode" (descriptor))
+
+(defun image-display-init-tar-ring (&optional cur-descr)
+  (let* ((regexp (image-file-name-regexp))
+	 (ring (ring-convert-sequence-to-ring
+		(with-current-buffer tar-superior-buffer
+		  (cl-loop for hdr in tar-parse-info
+			   for name = (tar-header-name hdr)
+			   when (string-match-p regexp name)
+			   collect (list name hdr))))))
+    (image-display-put ring ring)
+    (image-display-put retriever #'image-display-tar-retriever)
+    (when cur-descr
+      (let ((name (tar-header-name cur-descr)))
+	(image-display-put index (image-display-member ring name))))))
+
+(defun image-display-tar-retriever (file descriptor)
+  (let ((buff (with-current-buffer tar-superior-buffer
+		(tar--extract descriptor))))
+    (prog1 (with-current-buffer buff
+	     (create-image (string-make-unibyte (buffer-string))
+			   nil 'data))
+      (kill-buffer buff))))
+
+;; ARCHIVE
+(defvar archive-superior-buffer)
+(defvar archive-subfile-mode)
+(defvar archive-file-name-coding-system)
+(declare-function archive-*-extract "arc-mode" (archive name command))
+
+(defun image-display-init-archive-ring (&optional cur-descr)
+  (let* ((regexp (image-file-name-regexp))
+	 (ring (ring-convert-sequence-to-ring
+		(with-current-buffer archive-superior-buffer
+		  (cl-loop for descr across archive-files
+			   for name = (aref descr 0)
+			   when (string-match-p regexp name)
+			   collect (list name descr))))))
+    (image-display-put ring ring)
+    (image-display-put retriever #'image-display-archive-retriever)
+    (when cur-descr
+      (let ((name (aref cur-descr 0)))
+	(image-display-put index (image-display-member ring name))))))
+
+(defun image-display-archive-retriever (file descr)
+  ;; very short version of `archive-extract'
+  (with-current-buffer archive-superior-buffer
+    (let ((archive (buffer-file-name))
+	  (archive-buffer (current-buffer))
+	  (extractor (archive-name "extract"))
+	  (name (aref descr 0))
+	  (arcdir default-directory)
+	  (file-name-coding archive-file-name-coding-system))
+      (with-temp-buffer
+	(make-local-variable 'archive-superior-buffer)
+	(setq default-directory arcdir
+	      archive-superior-buffer archive-buffer
+	      archive-subfile-mode descr
+	      archive-file-name-coding-system file-name-coding)
+	(let ((coding-system-for-read 'no-conversion))
+	  (if (fboundp extractor)
+	      (funcall extractor archive name)
+	    (archive-*-extract archive name
+			       (symbol-value extractor))))
+	(create-image (string-make-unibyte (buffer-string))
+		      nil 'data)))))
 
 
 ;;; OTHER STUFF
@@ -607,7 +712,23 @@ as in `image-display-default-layouts'."
   "Major mode for editing image files.
 Key bindings:
 \\{image-mode-map}"
-  (image-text-mode--init-ring))
+  ;; todo: reuse loaded image data in the current file
+  (cond
+   ;; tar
+   ((and (boundp 'tar-superior-buffer) tar-superior-buffer)
+    (image-display-init-tar-ring  tar-superior-descriptor))
+   
+   ;; archive
+   ((and (boundp 'archive-superior-buffer) archive-superior-buffer)
+    (image-display-init-archive-ring archive-subfile-mode))
+   
+   ;; directory
+   (default-directory
+     (let* ((file (buffer-file-name))
+	    (file (and (file-readable-p file) file)))
+       (image-display-init-directory-ring file)))
+   (t (error "Cannot create image ring"))))
+
 (defalias 'image-mode 'image-text-mode)
 
 (defun image-text-mode--display-maybe ()
@@ -624,32 +745,6 @@ Key bindings:
   (let* ((vec (cddr ring))
 	 (ix (ring-index index (car ring) (cadr ring) (length vec))))
     (aset vec ix item)))
-
-(defun image-text-mode--init-ring ()
-  (let* ((file (buffer-file-name))
-	 (dir (file-name-directory file))
-	 (files (directory-files dir t (image-file-name-regexp) t))
-	 (data-p (not (and file
-			   (file-readable-p file)
-			   (not (file-remote-p file))
-			   (not (buffer-modified-p))
-			   (not (and (boundp 'archive-superior-buffer)
-				     archive-superior-buffer))
-			   (not (and (boundp 'tar-superior-buffer)
-				     tar-superior-buffer))))))
-    ;; Add the current file to the list of images if necessary, in
-    ;; case it does not match `image-file-name-regexp'.
-    (unless (member file files)
-      (push file files))
-    (setq files (sort files 'string-lessp)
-	  image-display-ring (ring-convert-sequence-to-ring files)
-	  image-display-index (ring-member image-display-ring file))
-    (when data-p
-      (ring-set image-display-ring image-display-index
-		(create-image
-		 (string-make-unibyte
-		  (buffer-substring-no-properties (point-min) (point-max)))
-		 nil 'data)))))
 
 (defun insert-image2 (image &optional string area slice map)
   "Insert IMAGE into current buffer at point.
