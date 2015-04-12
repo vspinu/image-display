@@ -82,7 +82,7 @@ and height of the current window."
 			:value (2 . 2)
 			integer integer))))
 
-(defvar-local image-display-layouts nil)
+(defvar-local image-display--layouts nil)
 
 (defcustom image-display-forward-commands '(forward-char
 					    forward-list forward-sexp forward-word
@@ -148,28 +148,25 @@ and height of the current window."
 
 ;;; PAGES
 
-(defvar image-display-page-start-delimiter "^ISTART"
+(defvar image-display-page-start-delimiter "IPAGE-START"
   "Sequence of characters that start a multi image portion of the buffer.")
-(defvar image-display-page-end-delimiter "^IEND"
+(defvar image-display-page-end-delimiter "IPAGE-IEND"
   "Sequence of characters that end a multi image portion of the buffer.")
 (defvar-local image-display-current-layout nil)
 (defvar-local image-display-current-geometry nil)
 
-(defun image-display-page-start (&optional pos)
-  "Return the page start position preceding POS or point-min if not found."
+(defun image-display-page-start-position (&optional pos)
   (save-excursion
-    (goto-char (or pos (point-max)))
-    (or (and (re-search-backward image-display-page-start-delimiter nil t)
-	     (match-end 0))
-	(point-min))))
+    (goto-char (or (if (consp pos) (car pos) pos) (point-max)))
+    (and (re-search-backward image-display-page-start-delimiter nil t)
+	 (cons (match-beginning 0) (match-end 0)))))
 
-(defun image-display-page-end (&optional pos)
-  "Return end of image page following POS or point-max if not found."
+(defun image-display-page-end-position (&optional pos)
   (save-excursion
-    (goto-char (or pos (point)))
-    (or (and (re-search-forward image-display-page-start-delimiter nil t)
-	     (match-beginning 0))
-	(point-max))))
+    (goto-char (or (if (consp pos) (cdr pos) pos)
+		   (point)))
+    (and (re-search-forward image-display-page-start-delimiter nil t)
+	 (cons (match-beginning 0) (match-end 0)))))
 
 (defun image-display--area-loss (r c N W H)
   (let* ((side (min (/ H (float r)) (/ W (float c))))
@@ -214,69 +211,22 @@ as in `image-display-default-layouts'."
 (defvar-local image-display--before-flip-column nil)
 (defvar-local image-display--after-flip-column nil)
 
-(defun image-display-next-page (&optional arg)
-  ;; fixme: implement Nth previous page
-  (interactive)
-  (let* ((index (image-display-get index))
-	 (orig-col (get-text-property (point) :id-col))
-	 (col (or (and  (eq image-display--after-flip-column orig-col)
-			image-display--before-flip-column)
-		  orig-col))
-	 (arg (or arg 1))
-	 (fwd (>= arg 0))
-	 (new-index (if fwd
-			(1+ (cdr index))
-		      (1- (car index)))))
-    (image-display-insert-page nil new-index t)
-    (image-display-goto-row-col (and fwd 1) col)
-    (let ((new-col (get-text-property (point) :id-col)))
-      (setq image-display--before-flip-column (when (< new-col col) col)
-	    image-display--after-flip-column new-col))))
-
-(defun image-display-previous-page (&optional arg)
-  (interactive)
-  (image-display-next-page (- (or arg 1))))
-
-(defun image-display-previous-row ()
-  ;; fixme: Nth row
-  (interactive)
-  (let ((row (get-text-property (point) :id-row))
-	(col (get-text-property (point) :id-col)))
-      (cond ((and row (= row 1))
-	     (image-display-previous-page))
-	    ((and row col)
-	     (image-display-goto-row-col (1- row) col))
-	    ;; should never happen
-	    (t (previous-line)))))
-
-(defun image-display-next-row ()
-  (interactive)
-  (let ((pos-eol (point-at-eol)))
-    (if (or (= pos-eol (point-max))
-	    (= pos-eol (1- (point-max))))
-	(image-display-next-page)
-      (let ((row (get-text-property (point) :id-row))
-	    (col (get-text-property (point) :id-col)))
-	(cond ((and row col)
-	       (image-display-goto-row-col (1+ row) col))
-	      ;; should never happen
-	      (t (next-line)))))))
-
-(defun image-display-insert-page (&optional ring index backp)
+(defun image-display-fill-page (&optional index backp)
   "Display images from image ring associated with the page at POS."
   ;; if index is > ring-length, rotate
   (let* ((inhibit-read-only t)
 	 (buffer-undo-list t)
-	 (page-start (image-display-page-start))
-	 (page-end (image-display-page-end page-start))
-	 (ring  (or ring (image-display-get ring page-start)))
+	 (start-delim (image-display-page-start-position))
+	 (end-delim (image-display-page-end-position start-delim))
+	 (ring (image-display-get ring start-delim))
 	 (rlen (ring-length ring))
-	 (layout (or (image-display-get current-layout page-start)
-		     (car (image-display-get layouts page-start))
-		     (car (image-display-get default-layouts page-start))))
+	 (layout (or (image-display-get current-layout start-delim)
+		     (car (image-display-get -layouts start-delim))
+		     (car (image-display-get default-layouts start-delim))
+		     (car image-display-default-layouts)))
 	 (geom (image-display--compute-geometry layout))
 	 (N (* (car geom) (cadr geom)))
-	 (index (or index (image-display-get index page-start)))
+	 (index (or index (image-display-get index start-delim)))
 	 (interval (cond
 		    ((numberp index)
 		     (image-display--compute-index-interval index rlen N))
@@ -286,9 +236,16 @@ as in `image-display-default-layouts'."
 	 (index-end (cdr interval))
 	 ;; number of images actually inserted
 	 (N (min N (1+ (- index-end index-start))))
-	 (retriever (image-display-get retriever page-start)))
+	 (retriever (image-display-get retriever start-delim))
+	 (page-start (or (cdr start-delim) (point-min)))
+	 (page-end (or (car end-delim) (point-max)))
+	 ;; not used yet
+	 (indent-str (if start-delim
+			 (save-restriction (goto-char (car start-delim))
+					   (make-string (current-column) ? ))
+		       "")))
 
-    (image-display-put index (cons index-start index-end) page-start)
+    (image-display-put index (cons index-start index-end) start-delim)
     (image-display-put current-geometry geom)
     (image-display-put current-layout layout)
 
@@ -314,7 +271,8 @@ as in `image-display-default-layouts'."
 		      (name (concat (or (image-get img :file)
 					(number-to-string i))
 				    " "))
-		      (face `(:box (:line-width ,image-display-border-width :color ,(face-attribute 'default :background))))
+		      (face `(:box (:line-width ,image-display-border-width
+				    :color ,(face-attribute 'default :background))))
 		      (common-props `(face ,face :id-ix ,ix :id-col ,col :id-row ,row)))
 
 		 (when (> px-left 0)
@@ -333,14 +291,76 @@ as in `image-display-default-layouts'."
 	(image-display-goto-image index)
       (goto-char page-start))))
 
+(defun image-display-insert-page (ring index &optional retriever layouts current-layout)
+  (let ((inhibit-read-only t)
+	(start (point)))
+    (insert image-display-page-start-delimiter "\n")
+    (add-text-properties start (1+ start)
+			 :id-ring ring
+			 :id-index index
+			 :id--layouts nil
+			 :id-current-layout current-layout
+			 :id-default-layouts layouts
+			 :id-retriever retriever)
+    (save-excursion (insert image-display-page-end-delimiter "\n"))
+    (image-display-fill-page)))
 
 
 ;;; NAVIGATION
 
+(defun image-display-next-page (&optional arg)
+  ;; fixme: Nth previous page
+  (interactive)
+  (let* ((index (image-display-get index))
+	 (orig-col (get-text-property (point) :id-col))
+	 (col (or (and  (eq image-display--after-flip-column orig-col)
+			image-display--before-flip-column)
+		  orig-col))
+	 (arg (or arg 1))
+	 (fwd (>= arg 0))
+	 (new-index (if fwd
+			(1+ (cdr index))
+		      (1- (car index)))))
+    (image-display-fill-page new-index t)
+    (image-display-goto-row-col (and fwd 1) col)
+    (let ((new-col (get-text-property (point) :id-col)))
+      (setq image-display--before-flip-column (when (< new-col col) col)
+	    image-display--after-flip-column new-col))))
+
+(defun image-display-previous-page (&optional arg)
+  (interactive)
+  (image-display-next-page (- (or arg 1))))
+
+(defun image-display-previous-row ()
+  ;; fixme: Nth row
+  (interactive)
+  (let ((row (get-text-property (point) :id-row))
+	(col (get-text-property (point) :id-col)))
+    (cond ((and row (= row 1))
+	   (image-display-previous-page))
+	  ((and row col)
+	   (image-display-goto-row-col (1- row) col))
+	  ;; should never happen
+	  (t (previous-line)))))
+
+(defun image-display-next-row ()
+  ;; fixme: Nth row
+  (interactive)
+  (let ((pos-eol (point-at-eol)))
+    (if (or (= pos-eol (point-max))
+	    (= pos-eol (1- (point-max))))
+	(image-display-next-page)
+      (let ((row (get-text-property (point) :id-row))
+	    (col (get-text-property (point) :id-col)))
+	(cond ((and row col)
+	       (image-display-goto-row-col (1+ row) col))
+	      ;; should never happen
+	      (t (next-line)))))))
+
 (defun image-display-goto-row-col (row col)
   ;; nil means last row/col
-  (let* ((pstart (image-display-page-start))
-	 (pend (image-display-page-end pstart)))
+  (let* ((pstart (image-display-page-start-position))
+	 (pend (image-display-page-end-position pstart)))
 
     ;; report: This reset is needed due to emacs bug. If new point is the same
     ;; as (point) goto-char jumps to a different position
@@ -363,12 +383,12 @@ as in `image-display-default-layouts'."
 	    (backward-char 1)))))))
 
 (defun image-display-goto-image (ix)
-  (let* ((page-start (image-display-page-start))
+  (let* ((page-start (image-display-page-start-position))
 	 (ix (mod ix (ring-length (image-display-get ring page-start))))
 	 (index (image-display-get index page-start)))
     (unless (and (>= ix (car index))
 		 (<= ix (cdr index)))
-      (image-display-insert-page nil ix))
+      (image-display-fill-page ix))
     (goto-char page-start) ; reset needed in emacs 24.4.93
     (goto-char (image-display--next-property-equal page-start :id-ix ix))
     (image-display--post-command-handler t)))
@@ -395,18 +415,25 @@ as in `image-display-default-layouts'."
 	   )
   (let ((kwd (intern (format ":id-%s" (symbol-name name))))
 	(obj (intern (format "image-display-%s" (symbol-name name)))))
-    `(or (get-text-property (or ,page-start (image-display-page-start))
-			    ,kwd)
-	 ,obj)))
+    `(let ((pstart (or ,page-start (image-display-page-start-position)))
+	   (props (text-properties-at pstart)))
+       (or (and pstart
+		(plist-member props ,kwd)
+		(plist-get props ,kwd))
+	   ,obj))))
 
 (defmacro image-display-put (name val &optional page-start)
   (declare (debug (symbolp form &optional form)))
   (let ((kwd (intern (format ":id-%s" (symbol-name name))))
 	(sym (intern (format "image-display-%s" (symbol-name name)))))
-    `(let ((pstart (or ,page-start (image-display-page-start))))
-       (if (and pstart (get-text-property pstart ,kwd))
-	   (put-text-property page-start (1+ pstart) ,kwd ,val)
-	 (set ',sym ,val)))))
+    `(let* ((pstart (or ,page-start (image-display-page-start-position)))
+	    (pstart (if (consp pstart) (car pstart) pstart))
+	    (props (text-properties-at pstart))
+	    (val ,val))
+       (if (and pstart
+		(plist-member props ,kwd))
+	   (put-text-property pstart (1+ pstart) ,kwd val)
+	 (set ',sym val)))))
 
 (defun image-display-member (ring name)
   "Return index of item with name NAME from RING.
@@ -483,15 +510,15 @@ Like `ring-member' but compares RING element's car to NAME."
   (when (and layout (not (numberp layout)))
     (setq layout (image-display--read-layout)))
   (if layout
-      (image-display-put layouts image-display-default-layouts)
-    (unless (image-display-get layouts)
-      (image-display-put layouts image-display-default-layouts))
-    (let ((layouts (image-display-get layouts)))
-      (when (eq (car layouts) (image-display-get current-layout))
-	(setq layouts (cdr layouts)))
-      (setq layout (car layouts))
-      (image-display-put layouts (cdr layouts))))
-  (image-display-put current-layout layout)
+      (image-display-put -layouts image-display-default-layouts)
+    (unless (image-display-get -layouts)
+      (image-display-put -layouts image-display-default-layouts))
+    (let ((-layouts (image-display-get -layouts)))
+      (when (eq (car -layouts) (image-display-get current-layout))
+	(setq -layouts (cdr -layouts)))
+      (setq -layout (car -layouts))
+      (image-display-put -layouts (cdr -layouts))))
+  (image-display-put current-layout -layout)
   (image-display-refresh))
 
 (defun image-display-refresh ()
@@ -499,7 +526,7 @@ Like `ring-member' but compares RING element's car to NAME."
   (let ((ix (get-text-property (point) :id-ix)))
     ;; tothink: call imaged-display-mode instead?
     (image-display-put index ix)
-    (image-display-insert-page)))
+    (image-display-fill-page)))
 
 (defun image-display-as-text ()
   (interactive)
@@ -568,7 +595,7 @@ Like `ring-member' but compares RING element's car to NAME."
 			      :background ,bg-color)))
   
   ;; ring and index have been setup
-  (image-display-insert-page)
+  (image-display-fill-page)
   ;; (image-mode-setup-winprops)
   (read-only-mode 1)
 
