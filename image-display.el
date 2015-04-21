@@ -359,8 +359,8 @@ as in `image-display-default-layouts'."
 
 (defun image-display-goto-row-col (row col)
   ;; nil means last row/col
-  (let* ((pstart (image-display-page-start-position))
-	 (pend (image-display-page-end-position pstart)))
+  (let* ((pstart (or (image-display-page-start-position) (point-min)))
+	 (pend (or (image-display-page-end-position pstart) (point-max))))
 
     ;; report: This reset is needed due to emacs bug. If new point is the same
     ;; as (point) goto-char jumps to a different position
@@ -383,7 +383,7 @@ as in `image-display-default-layouts'."
 	    (backward-char 1)))))))
 
 (defun image-display-goto-image (ix)
-  (let* ((page-start (image-display-page-start-position))
+  (let* ((page-start (or (image-display-page-start-position) (point-min)))
 	 (ix (mod ix (ring-length (image-display-get ring page-start))))
 	 (index (image-display-get index page-start)))
     (unless (and (>= ix (car index))
@@ -415,9 +415,9 @@ as in `image-display-default-layouts'."
 	   )
   (let ((kwd (intern (format ":id-%s" (symbol-name name))))
 	(obj (intern (format "image-display-%s" (symbol-name name)))))
-    `(let ((pstart (or ,page-start (image-display-page-start-position)))
-	   (props (text-properties-at pstart)))
-       (or (and pstart
+    `(let* ((pstart (or ,page-start (image-display-page-start-position)))
+	    (props (and pstart (text-properties-at pstart))))
+       (or (and props
 		(plist-member props ,kwd)
 		(plist-get props ,kwd))
 	   ,obj))))
@@ -428,10 +428,9 @@ as in `image-display-default-layouts'."
 	(sym (intern (format "image-display-%s" (symbol-name name)))))
     `(let* ((pstart (or ,page-start (image-display-page-start-position)))
 	    (pstart (if (consp pstart) (car pstart) pstart))
-	    (props (text-properties-at pstart))
+	    (props (and pstart (text-properties-at pstart)))
 	    (val ,val))
-       (if (and pstart
-		(plist-member props ,kwd))
+       (if (and props (plist-member props ,kwd))
 	   (put-text-property pstart (1+ pstart) ,kwd val)
 	 (set ',sym val)))))
 
@@ -648,11 +647,11 @@ Like `ring-member' but compares RING element's car to NAME."
     ;; 		 nil 'data)))
     (let* ((alist (mapcar (lambda (f) (list (file-name-nondirectory f) f))
 			  (sort files 'string-lessp)))
-	   (ring (ring-convert-sequence-to-ring alist)))
-      (image-display-put ring ring)
+	   (new-ring (ring-convert-sequence-to-ring alist)))
+      (image-display-put ring new-ring)
       (when cur-file
 	(let ((name (file-name-nondirectory cur-file)))
-	  (image-display-put index (image-display-member ring name)))))))
+	  (image-display-put index (image-display-member new-ring name)))))))
 
 (declare-function tramp-handle-insert-file-contents "tramp" (filename &optional visit beg end replace))
 (defun image-display-default-retriever (name obj &rest ignored)
