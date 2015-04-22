@@ -150,7 +150,7 @@ and height of the current window."
 
 (defvar image-display-page-start-delimiter "IPAGE-START"
   "Sequence of characters that start a multi image portion of the buffer.")
-(defvar image-display-page-end-delimiter "IPAGE-IEND"
+(defvar image-display-page-end-delimiter "IPAGE-END"
   "Sequence of characters that end a multi image portion of the buffer.")
 (defvar-local image-display-current-layout nil)
 (defvar-local image-display-current-geometry nil)
@@ -165,8 +165,18 @@ and height of the current window."
   (save-excursion
     (goto-char (or (if (consp pos) (cdr pos) pos)
 		   (point)))
-    (and (re-search-forward image-display-page-start-delimiter nil t)
+    (and (re-search-forward image-display-page-end-delimiter nil t)
 	 (cons (match-beginning 0) (match-end 0)))))
+
+(defun image-display-ring-start-position (&optional pos)
+  (let ((image-display-page-start-delimiter image-display-ring-start-delimiter)
+	(image-display-page-end-delimiter image-display-ring-end-delimiter))
+    (image-display-page-start-position pos)))
+
+(defun image-display-ring-end-position (&optional pos)
+  (let ((image-display-page-start-delimiter image-display-ring-start-delimiter)
+	(image-display-page-end-delimiter image-display-ring-end-delimiter))
+    (image-display-page-end-position pos)))
 
 (defun image-display--area-loss (r c N W H)
   (let* ((side (min (/ H (float r)) (/ W (float c))))
@@ -268,7 +278,7 @@ as in `image-display-default-layouts'."
 		      (px-right (max 0 (ceiling side-px)))
 		      (col (1+ (mod (1- i) (cadr geom))))
 		      (row (1+ (/ (1- i) (cadr geom))))
-		      (name (concat (or (image-get img :file)
+		      (name (concat (or ;; (image-get img :file)
 					(number-to-string i))
 				    " "))
 		      (face `(:box (:line-width ,image-display-border-width
@@ -296,14 +306,53 @@ as in `image-display-default-layouts'."
 	(start (point)))
     (insert image-display-page-start-delimiter "\n")
     (add-text-properties start (1+ start)
-			 :id-ring ring
 			 :id-index index
-			 :id--layouts nil
-			 :id-current-layout current-layout
-			 :id-default-layouts layouts
-			 :id-retriever retriever)
+			 :id--layouts nil)
+    (when ring
+      ;; when nil, this page shares the global ring
+      (put-text-property start (1+ start) :id-ring ring))
+    (when retriever
+      (put-text-property start (1+ start) :id-retriever retriever))
+    (when layouts
+      (put-text-property start (1+ start) :id-default-layouts layouts))
+    (when current-layout
+      (put-text-property start (1+ start) :id-current-layout current-layout))
     (save-excursion (insert image-display-page-end-delimiter "\n"))
     (image-display-fill-page)))
+
+
+
+;;; INLINE RINGS
+(defvar image-display-ring-start-delimiter "IRING-START")
+(defvar image-display-ring-end-delimiter "IRING-END")
+(defvar image-display-filename-pattern "[[%s]]")
+
+(defun image-display--get-inline-ring (beg end)
+  (save-excursion
+    (goto-char beg)
+    (let ((regexp (format image-display-filename-pattern
+			  (format "\\(?1:.*%s\\)"
+				  (image-file-name-regexp))))
+	  files)
+      (while (re-search-forward regexp (cdr end) t)
+	(push (match-string-no-properties 1) file))
+      (setq files (mapcar (lambda (f) (list (file-name-nondirectory f) f))
+			  (reverse files)))
+      (ring-convert-sequence-to-ring files))))
+
+(defun image-display-inline-page (&optional pos no-error)
+  (let* ((rend (image-display-ring-end-position pos))
+	 (rbeg (and rend (image-display-ring-start-position rend)))
+	 (ring (if (and rend rbeg)
+		   (image-display--get-inline-ring (cdr rbeg) (car rend))
+		 (unless no-error
+		   (error "No inline image ring at point")))))
+    (when ring
+      (add-to-invisibility-spec 'image-display),
+      (put-text-property (car rbeg) (cdr rend) 'invisible 'image-display)
+      (image-display-insert-page ring 0))))
+
+;; todo: image-display-inline-pages-in-region
 
 
 ;;; NAVIGATION
