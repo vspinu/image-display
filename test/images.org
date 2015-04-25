@@ -1,0 +1,11 @@
+* First set
+** Indent
+   IRING-START
+   [[file:~/VC/image-display/img/entypo-free-icons.png]]
+   [[file:~/VC/image-display/img/simpleicons-free-icons.png]]
+   [[file:~/VC/image-display/img/Simple_Circle.png]]
+   [[file:~/VC/image-display/img/butterfly.png]]
+   [[file:~/VC/image-display/img/test2.png]]
+   [[file:~/VC/image-display/img/test3.png]]
+   [[file:~/VC/image-display/img/voice.gif]]
+   IRING-END

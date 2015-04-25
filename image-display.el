@@ -68,7 +68,7 @@ list values are as the VALUE argument of `image-transform-spec:geometry'."
   :group 'image-display
   :version "25.1")
 
-(defcustom image-display-default-layouts '(1 4 9)
+(defcustom image-display-default-layouts '((2 . 4) 9 1)
   "Default geometry of the image-display page.
 Can be a number or a cons of the form (rows . cols). A number
 represents a total number of images per page. In this case the
@@ -136,18 +136,23 @@ and height of the current window."
 		(eq 0 (get-text-property (point) 'intangible)))
 	   (forward-char)))
     (setq image-display--last-point (point))
-    (when image-display--cursor-overlay
-      (let ((inhibit-point-motion-hooks t)
-	    (span (image-display--get-image-span (point))))
-	(move-overlay image-display--cursor-overlay (car span) (cdr span))))
     (let ((ix (get-text-property (point) :id-ix)))
       (when ix
-	(let ((name (car (ring-ref (image-display-get ring) ix))))
-	  (rename-buffer (format "*ID[%s]*" name) t ))))))
+	(let* ((pstart (image-display-page-start-position))
+	       (overlay (image-display-get cursor-overlay pstart)))
+	  (when overlay
+	    (let ((inhibit-point-motion-hooks t)
+		  (span (image-display--get-image-span (point))))
+	      (move-overlay overlay (car span) (cdr span))))
+	  (unless (image-display-get delimited pstart)
+	    (let ((name (car (ring-ref (image-display-get ring pstart) ix))))
+	      (rename-buffer (format "*ID[%s]*" name) t ))))))))
 
 
 ;;; PAGES
 
+(defvar image-display-delimited  nil
+  "Non nil in delimited pages only.")
 (defvar image-display-page-start-delimiter "IPAGE-START"
   "Sequence of characters that start a multi image portion of the buffer.")
 (defvar image-display-page-end-delimiter "IPAGE-END"
@@ -226,17 +231,17 @@ as in `image-display-default-layouts'."
   ;; if index is > ring-length, rotate
   (let* ((inhibit-read-only t)
 	 (buffer-undo-list t)
-	 (start-delim (image-display-page-start-position))
-	 (end-delim (image-display-page-end-position start-delim))
-	 (ring (image-display-get ring start-delim))
+	 (page-start (image-display-page-start-position))
+	 (page-end (image-display-page-end-position page-start))
+	 (ring (image-display-get ring page-start))
 	 (rlen (ring-length ring))
-	 (layout (or (image-display-get current-layout start-delim)
-		     (car (image-display-get -layouts start-delim))
-		     (car (image-display-get default-layouts start-delim))
+	 (layout (or (image-display-get current-layout page-start)
+		     (car (image-display-get -layouts page-start))
+		     (car (image-display-get default-layouts page-start))
 		     (car image-display-default-layouts)))
 	 (geom (image-display--compute-geometry layout))
 	 (N (* (car geom) (cadr geom)))
-	 (index (or index (image-display-get index start-delim)))
+	 (index (or index (image-display-get index page-start)))
 	 (interval (cond
 		    ((numberp index)
 		     (image-display--compute-index-interval index rlen N))
@@ -246,16 +251,16 @@ as in `image-display-default-layouts'."
 	 (index-end (cdr interval))
 	 ;; number of images actually inserted
 	 (N (min N (1+ (- index-end index-start))))
-	 (retriever (image-display-get retriever start-delim))
-	 (page-start (or (cdr start-delim) (point-min)))
-	 (page-end (or (car end-delim) (point-max)))
+	 (retriever (image-display-get retriever page-start))
+	 (pstart (or (cdr page-start) (point-min)))
+	 (pend (or (car page-end) (point-max)))
 	 ;; not used yet
-	 (indent-str (if start-delim
-			 (save-restriction (goto-char (car start-delim))
+	 (indent-str (if page-start
+			 (save-restriction (goto-char (car page-start))
 					   (make-string (current-column) ? ))
 		       "")))
 
-    (image-display-put index (cons index-start index-end) start-delim)
+    (image-display-put index (cons index-start index-end) page-start)
     (image-display-put current-geometry geom)
     (image-display-put current-layout layout)
 
@@ -263,8 +268,10 @@ as in `image-display-default-layouts'."
     (switch-to-buffer (current-buffer))
 
     (with-silent-modifications
-      (goto-char page-start)
-      (delete-region page-start page-end)
+      (goto-char pstart)
+      (delete-region pstart pend)
+      (when (image-display-get delimited page-start)
+	(insert "\n"))
       (cl-loop for ix from index-start to index-end
 	       for i = (1+ (- ix index-start)) do
 	       (let* ((img (ring-ref ring ix))
@@ -278,8 +285,9 @@ as in `image-display-default-layouts'."
 		      (px-right (max 0 (ceiling side-px)))
 		      (col (1+ (mod (1- i) (cadr geom))))
 		      (row (1+ (/ (1- i) (cadr geom))))
-		      (name (concat (or ;; (image-get img :file)
-					(number-to-string i))
+		      (name (concat "image"
+				    (or ;; (image-get img :file)
+				     (number-to-string i))
 				    " "))
 		      (face `(:box (:line-width ,image-display-border-width
 				    :color ,(face-attribute 'default :background))))
@@ -299,15 +307,20 @@ as in `image-display-default-layouts'."
 		   (insert (propertize " " 'intangible i 'face face))))))
     (if (numberp index)
 	(image-display-goto-image index)
-      (goto-char page-start))))
+      (goto-char pstart))
+    (let ((page-end (image-display-page-end-position page-start)))
+      (put-text-property (car page-start) (cdr page-start) 'invisible 'image-display)
+      (put-text-property (car page-end) (cdr page-end) 'invisible 'image-display)
+      (add-text-properties (car page-start) (cdr page-end)
+			   `(read-only t keymap ,image-display-mode-map)))))
 
 (defun image-display-insert-page (ring index &optional retriever layouts current-layout)
   (let ((inhibit-read-only t)
 	(start (point)))
     (insert image-display-page-start-delimiter "\n")
     (add-text-properties start (1+ start)
-			 :id-index index
-			 :id--layouts nil)
+			 `(:id-index ,index :id--layouts nil :id-delimited t
+				     :id-cursor-overlay ,(image-display-make-cursor-overlay)))
     (when ring
       ;; when nil, this page shares the global ring
       (put-text-property start (1+ start) :id-ring ring))
@@ -317,7 +330,10 @@ as in `image-display-default-layouts'."
       (put-text-property start (1+ start) :id-default-layouts layouts))
     (when current-layout
       (put-text-property start (1+ start) :id-current-layout current-layout))
-    (save-excursion (insert image-display-page-end-delimiter "\n"))
+    (save-excursion
+      (indent-according-to-mode)
+      (insert image-display-page-end-delimiter "\n"))
+    (image-display--add-hooks)
     (image-display-fill-page)))
 
 
@@ -325,22 +341,22 @@ as in `image-display-default-layouts'."
 ;;; INLINE RINGS
 (defvar image-display-ring-start-delimiter "IRING-START")
 (defvar image-display-ring-end-delimiter "IRING-END")
-(defvar image-display-filename-pattern "[[%s]]")
+(defvar image-display-filename-pattern "\\[\\[%s\\]\\]")
 
 (defun image-display--get-inline-ring (beg end)
   (save-excursion
     (goto-char beg)
     (let ((regexp (format image-display-filename-pattern
-			  (format "\\(?1:.*%s\\)"
-				  (image-file-name-regexp))))
+			  (format "\\(file:\\)?\\(?1:.*%s\\)"
+				  (image-file-name-regexp t))))
 	  files)
-      (while (re-search-forward regexp (cdr end) t)
-	(push (match-string-no-properties 1) file))
+      (while (re-search-forward regexp end t)
+	(push (match-string-no-properties 1) files))
       (setq files (mapcar (lambda (f) (list (file-name-nondirectory f) f))
 			  (reverse files)))
       (ring-convert-sequence-to-ring files))))
 
-(defun image-display-inline-page (&optional pos no-error)
+(defun image-display--inline-page (&optional pos no-error)
   (let* ((rend (image-display-ring-end-position pos))
 	 (rbeg (and rend (image-display-ring-start-position rend)))
 	 (ring (if (and rend rbeg)
@@ -348,11 +364,20 @@ as in `image-display-default-layouts'."
 		 (unless no-error
 		   (error "No inline image ring at point")))))
     (when ring
-      (add-to-invisibility-spec 'image-display),
-      (put-text-property (car rbeg) (cdr rend) 'invisible 'image-display)
-      (image-display-insert-page ring 0))))
+      (goto-char (cdr rend))
+      (image-display-insert-page ring 0)
+      (add-to-invisibility-spec 'image-display)
+      (add-text-properties (car rbeg) (cdr rend) '(invisible image-display read-only t)))))
 
-;; todo: image-display-inline-pages-in-region
+(defun image-display-inline-pages (&optional start end)
+  (interactive)
+  (let ((start (or start (point-min)))
+	(end (or end (point-max))))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward image-display-ring-start-delimiter end t)
+	(save-excursion (image-display--inline-page))))))
+
 
 
 ;;; NAVIGATION
@@ -408,13 +433,14 @@ as in `image-display-default-layouts'."
 
 (defun image-display-goto-row-col (row col)
   ;; nil means last row/col
-  (let* ((pstart (or (image-display-page-start-position) (point-min)))
-	 (pend (or (image-display-page-end-position pstart) (point-max))))
+  (let* ((pstart (or (cdr (image-display-page-start-position))
+		     (point-min)))
+	 (pend (or (car (image-display-page-end-position pstart))
+		   (point-max))))
 
     ;; report: This reset is needed due to emacs bug. If new point is the same
     ;; as (point) goto-char jumps to a different position
     (goto-char pstart)
-
     (let ((row-pos (and row (image-display--next-property-equal pstart :id-row row))))
       (if row-pos
 	  (let ((col-pos (and col (image-display--next-property-equal row-pos :id-col col))))
@@ -432,14 +458,17 @@ as in `image-display-default-layouts'."
 	    (backward-char 1)))))))
 
 (defun image-display-goto-image (ix)
-  (let* ((page-start (or (image-display-page-start-position) (point-min)))
+  (let* ((page-start (or (image-display-page-start-position)
+			 (point-min)))
 	 (ix (mod ix (ring-length (image-display-get ring page-start))))
-	 (index (image-display-get index page-start)))
+	 (index (image-display-get index page-start))
+	 (pstart (or (cdr-safe page-start)
+		     page-start)))
     (unless (and (>= ix (car index))
 		 (<= ix (cdr index)))
       (image-display-fill-page ix))
-    (goto-char page-start) ; reset needed in emacs 24.4.93
-    (goto-char (image-display--next-property-equal page-start :id-ix ix))
+    (goto-char pstart) ; reset needed in emacs 24.4.93
+    (goto-char (image-display--next-property-equal pstart :id-ix ix))
     (image-display--post-command-handler t)))
 
 
@@ -465,6 +494,7 @@ as in `image-display-default-layouts'."
   (let ((kwd (intern (format ":id-%s" (symbol-name name))))
 	(obj (intern (format "image-display-%s" (symbol-name name)))))
     `(let* ((pstart (or ,page-start (image-display-page-start-position)))
+	    (pstart (if (consp pstart) (car pstart) pstart))
 	    (props (and pstart (text-properties-at pstart))))
        (or (and props
 		(plist-member props ,kwd)
@@ -475,7 +505,8 @@ as in `image-display-default-layouts'."
   (declare (debug (symbolp form &optional form)))
   (let ((kwd (intern (format ":id-%s" (symbol-name name))))
 	(sym (intern (format "image-display-%s" (symbol-name name)))))
-    `(let* ((pstart (or ,page-start (image-display-page-start-position)))
+    `(let* ((inhibit-read-only t)
+	    (pstart (or ,page-start (image-display-page-start-position)))
 	    (pstart (if (consp pstart) (car pstart) pstart))
 	    (props (and pstart (text-properties-at pstart)))
 	    (val ,val))
@@ -501,6 +532,19 @@ Like `ring-member' but compares RING element's car to NAME."
 
 
 ;;; UTILS
+
+(defun image-display-make-cursor-overlay ()
+ (let ((overlay (make-overlay 1 1))
+       (bg-color (face-attribute 'highlight :background)))
+   (overlay-put overlay
+		'face `(:box (:line-width ,image-display-border-width
+					  :color ,bg-color)
+			     :background ,bg-color))
+   overlay))
+
+(defun image-display--add-hooks ()
+  (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
+  (add-hook 'post-command-hook 'image-display--post-command-handler nil t))
 
 (defun image-display--next-property-equal (pos prop val &optional limit)
   (if (equal val (get-text-property pos prop))
@@ -633,23 +677,16 @@ Like `ring-member' but compares RING element's car to NAME."
    cursor-type 'box
    truncate-lines t)
   
-  (setq-local image-display--cursor-overlay (make-overlay 1 1))
   (setq image-display-layouts image-display-default-layouts)
-  
-  (let ((bg-color (face-attribute 'highlight :background)))
-    (overlay-put image-display--cursor-overlay
-		 'face `(:box (:line-width ,image-display-border-width
-					   :color ,bg-color)
-			      :background ,bg-color)))
+  (setq-local image-display-cursor-overlay (image-display-make-cursor-overlay))
   
   ;; ring and index have been setup
   (image-display-fill-page)
   ;; (image-mode-setup-winprops)
   (read-only-mode 1)
 
-  (add-hook 'pre-command-hook 'image-display--pre-command-handler nil t)
-  (add-hook 'post-command-hook 'image-display--post-command-handler nil t)
-
+  (image-display--add-hooks)
+  
   ;; todo:remove display properties
   (add-hook 'change-major-mode-hook (lambda ()) nil t))
 
@@ -881,5 +918,27 @@ text property keymap. A special value of t means to use
                                    rear-nonsticky (display)
                                    keymap ,map))))
 (defalias 'insert-image 'insert-image2)
+
+(defun image-file-name-regexp2 (&optional no-empty-end)
+  "Return a regular expression matching image-file filenames.
+If NO-EMPTY-END is non-nil, don't append empty string terminator
+\\' at the end of the regular expression."
+  (let ((exts-regexp
+	 (and image-file-name-extensions
+	      (concat "\\."
+		      (regexp-opt (nconc (mapcar #'upcase
+						 image-file-name-extensions)
+					 image-file-name-extensions)
+				  t)
+		      (unless no-empty-end "\\'")))))
+    (if image-file-name-regexps
+	(mapconcat 'identity
+		   (if exts-regexp
+		       (cons exts-regexp image-file-name-regexps)
+		     image-file-name-regexps)
+		   "\\|")
+      exts-regexp)))
+(defalias 'image-file-name-regexp 'image-file-name-regexp2)
+
 
 (provide 'image-display)
